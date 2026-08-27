@@ -1,0 +1,42 @@
+# ── Core ─────────────────────────────────────────────────────────
+fastapi==0.141.1
+uvicorn[standard]==0.52.1
+pydantic==2.13.4
+pydantic-settings==2.14.2
+python-dotenv==1.2.2
+email-validator==2.2.0
+python-multipart==0.0.32
+
+# ── MongoDB ──────────────────────────────────────────────────────
+motor==3.7.1
+pymongo==4.17.0
+dnspython==2.8.0
+
+# ── Authentication ───────────────────────────────────────────────
+python-jose[cryptography]==3.5.0
+passlib[bcrypt]==1.7.4
+bcrypt==5.0.0
+Authlib==1.7.2
+cryptography==50.0.0
+httpx==0.28.1
+
+# ── Testing ──────────────────────────────────────────────────────
+pytest==9.1.1
+pytest-asyncio==1.4.0
+
+# ── Celery & Redis ───────────────────────────────────────────────
+celery==5.4.0
+redis==5.2.1
+
+# ── Document Ingestion & Table Parsing ──────────────────────────────
+pypdf==5.3.1
+pdfplumber==0.11.10
+reportlab==5.0.1
+numpy
+torch
+transformers
+unstructured[pdf]
+easyocr
+
+# ── Deployment (Phase 2H) ────────────────────────────────────
+gunicorn==23.0.0

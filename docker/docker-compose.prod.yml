@@ -1,0 +1,121 @@
+# ──────────────────────────────────────────────────────────────
+# FinSentry AI — Production Docker Compose
+# ──────────────────────────────────────────────────────────────
+# Full production deployment stack:
+#   finsentry-redis     → Redis 7 (broker + cache)
+#   finsentry-backend   → FastAPI / Uvicorn
+#   finsentry-worker    → Celery background worker
+#   finsentry-frontend  → React SPA (Nginx)
+#   finsentry-gateway   → Nginx reverse proxy
+# ──────────────────────────────────────────────────────────────
+
+services:
+  # ── Redis ────────────────────────────────────────────────────
+  finsentry-redis:
+    image: redis:7-alpine
+    container_name: finsentry-redis
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+      --save 60 1000
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - finsentry_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+    networks:
+      - finsentry-net
+
+  # ── Backend API ──────────────────────────────────────────────
+  backend:
+    build:
+      context: ..
+      dockerfile: docker/backend.Dockerfile
+      target: production
+    container_name: finsentry-backend
+    env_file:
+      - ../backend/.env
+    environment:
+      - REDIS_HOST=finsentry-redis
+      - REDIS_PORT=6379
+      - APP_ENV=production
+      - DEBUG=false
+    depends_on:
+      finsentry-redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - finsentry-net
+
+  # ── Celery Worker ────────────────────────────────────────────
+  celery_worker:
+    build:
+      context: ..
+      dockerfile: docker/celery.Dockerfile
+      target: production
+    container_name: finsentry-celery-worker
+    env_file:
+      - ../backend/.env
+    environment:
+      - REDIS_HOST=finsentry-redis
+      - REDIS_PORT=6379
+      - APP_ENV=production
+    depends_on:
+      finsentry-redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - finsentry-net
+
+  # ── Frontend ─────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ..
+      dockerfile: docker/frontend.Dockerfile
+      target: production
+    container_name: finsentry-frontend
+    restart: unless-stopped
+    networks:
+      - finsentry-net
+
+  # ── Nginx Gateway (Reverse Proxy) ───────────────────────────
+  gateway:
+    image: nginx:1.27-alpine
+    container_name: finsentry-gateway
+    ports:
+      - "${GATEWAY_PORT:-80}:80"
+    volumes:
+      - ./nginx/gateway.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - finsentry-net
+
+volumes:
+  finsentry_redis_data:
+    name: finsentry_redis_data
+
+networks:
+  finsentry-net:
+    name: finsentry-net
+    driver: bridge

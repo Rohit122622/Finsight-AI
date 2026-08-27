@@ -1,0 +1,50 @@
+# FinSentry AI — Docker Ignore
+# Keeps build context small and prevents leaking secrets
+
+# Version control
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Node modules
+node_modules
+frontend/node_modules
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+backend/venv
+backend/.pytest_cache
+backend/__pycache__
+
+# Environment files (secrets — inject via docker-compose env_file)
+.env
+backend/.env
+.env.local
+
+# Build artifacts
+dist
+build
+coverage
+frontend/dist
+
+# Documentation (not needed in container)
+docs
+*.md
+LICENSE
+
+# Docker files themselves
+docker/docker-compose*.yml
+
+# GitHub
+.github
+
+# Agents artifacts
+.agents
