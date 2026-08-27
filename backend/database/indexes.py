@@ -7,6 +7,7 @@ every boot without duplicating indexes.
 """
 
 import logging
+from typing import Any, Dict, List
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo import ASCENDING, DESCENDING
@@ -243,6 +244,83 @@ async def create_indexes(db: AsyncIOMotorDatabase) -> None:
         )
         logger.info("Ensured indexes on research_traces")
 
+        # ------------------------------------------------------------------
+        # MongoDB Atlas Vector Search Index Definition
+        # ------------------------------------------------------------------
+        await ensure_atlas_vector_search_index(db)
+
     except Exception:
         logger.exception("Failed to create database indexes")
         raise
+
+
+ATLAS_VECTOR_SEARCH_INDEX_DEFINITION: Dict[str, Any] = {
+    "name": "vector_index",
+    "type": "vectorSearch",
+    "definition": {
+        "fields": [
+            {
+                "type": "vector",
+                "path": "chunks.embedding",
+                "numDimensions": 1024,
+                "similarity": "cosine",
+            },
+            {
+                "type": "filter",
+                "path": "session_id",
+            },
+            {
+                "type": "filter",
+                "path": "user_id",
+            },
+            {
+                "type": "filter",
+                "path": "status",
+            },
+            {
+                "type": "filter",
+                "path": "document_id",
+            },
+        ]
+    },
+}
+
+
+async def ensure_atlas_vector_search_index(db: AsyncIOMotorDatabase) -> bool:
+    """
+    Attempt to create or verify the Atlas Vector Search index on the documents collection.
+    If running on standard/local MongoDB or non-Atlas cluster, logs an informative notice.
+    """
+    try:
+        cmd = {
+            "createSearchIndexes": "documents",
+            "indexes": [
+                {
+                    "name": "vector_index",
+                    "type": "vectorSearch",
+                    "definition": {
+                        "fields": [
+                            {
+                                "type": "vector",
+                                "path": "chunks.embedding",
+                                "numDimensions": 1024,
+                                "similarity": "cosine",
+                            },
+                            {"type": "filter", "path": "session_id"},
+                            {"type": "filter", "path": "user_id"},
+                            {"type": "filter", "path": "status"},
+                            {"type": "filter", "path": "document_id"},
+                        ]
+                    },
+                }
+            ],
+        }
+        await db.command(cmd)
+        logger.info("Ensured MongoDB Atlas Vector Search index 'vector_index' on documents.chunks.embedding")
+        return True
+    except Exception as exc:
+        logger.info(
+            "Atlas Vector Search index notice (using high-performance application vector search if not on Atlas cluster): %s",
+            exc,
+        )
+        return False

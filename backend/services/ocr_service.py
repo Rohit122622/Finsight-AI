@@ -168,14 +168,26 @@ class EasyOCRAdapter(BaseOCRAdapter):
 class OCRService:
     """
     Central OCR service delegating to the configured OCR adapter.
+    Uses Unstructured.io OCR as the primary engine when OCR is required,
+    with robust multi-tier fallback to EasyOCR and Fallback adapters.
     """
 
     def __init__(self) -> None:
+        self._primary_adapter: BaseOCRAdapter
+        self._secondary_adapter: Optional[BaseOCRAdapter] = None
+        self._fallback_adapter: BaseOCRAdapter = FallbackOCRAdapter()
+
+        # Primary: Unstructured.io
+        self._primary_adapter = UnstructuredOCRAdapter()
+
+        # Secondary: EasyOCR
         try:
-            import easyocr                             
-            self._adapter: BaseOCRAdapter = EasyOCRAdapter()
-        except ImportError:
-            self._adapter: BaseOCRAdapter = FallbackOCRAdapter()
+            import easyocr  # noqa: F401
+            self._secondary_adapter = EasyOCRAdapter()
+        except Exception:
+            self._secondary_adapter = None
+
+        self._adapter: BaseOCRAdapter = self._primary_adapter
 
     def set_adapter(self, adapter: BaseOCRAdapter) -> None:
         self._adapter = adapter
@@ -187,9 +199,42 @@ class OCRService:
         self, content: bytes, filename: str = "document.pdf"
     ) -> Tuple[str, Optional[int], List[Dict[str, Any]]]:
         """
-        Execute OCR via the configured adapter.
+        Execute OCR via the configured adapter with automatic fallback.
         """
-        return self._adapter.ocr_document(content=content, filename=filename)
+        # If custom adapter was explicitly set, run it directly
+        if self._adapter is not self._primary_adapter:
+            return self._adapter.ocr_document(content=content, filename=filename)
+
+        # Primary attempt: Unstructured.io
+        try:
+            logger.info("Executing Unstructured.io OCR adapter on %s", filename)
+            return self._primary_adapter.ocr_document(content=content, filename=filename)
+        except Exception as unstruct_exc:
+            logger.warning(
+                "Unstructured.io OCR adapter failed for %s (%s); attempting fallback OCR engine",
+                filename,
+                unstruct_exc,
+            )
+
+        # Secondary attempt: EasyOCR
+        if self._secondary_adapter:
+            try:
+                logger.info("Executing secondary EasyOCR adapter on %s", filename)
+                return self._secondary_adapter.ocr_document(content=content, filename=filename)
+            except Exception as easy_exc:
+                logger.warning(
+                    "EasyOCR fallback adapter failed for %s: %s",
+                    filename,
+                    easy_exc,
+                )
+
+        # Tertiary fallback (for tests or pre-registered mocks)
+        try:
+            return self._fallback_adapter.ocr_document(content=content, filename=filename)
+        except Exception:
+            pass
+
+        raise RuntimeError(f"All OCR engines failed to process document '{filename}'.")
 
 
 ocr_service = OCRService()

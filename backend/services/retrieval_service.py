@@ -241,7 +241,7 @@ class RetrievalService:
         query: Dict[str, Any] = {
             "session_id": session_id,
             "user_id": user_id,
-            "status": "PROCESSED",
+            "status": {"$in": ["PROCESSED", "INDEXED"]},
         }
 
         if filters:

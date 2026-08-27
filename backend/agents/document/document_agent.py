@@ -238,6 +238,8 @@ class DocumentAgent(BaseAgent):
                     "ocr_invoked": ocr_invoked,
                     "table_count": len(extracted_tables),
                     "section_breakdown": section_breakdown,
+                    "embedding_model": embedding_service.model_name,
+                    "embedding_dimension": embedding_service.dimension,
                 },
             )
 

@@ -43,7 +43,7 @@ SECTION_RULE_DEFINITIONS: List[Tuple[re.Pattern, str, str]] = [
                                         
     (
         re.compile(
-            r"(?:item\s+8[\.\:\s\-]+financial\s+statements|consolidated\s+statements?\s+of\s+(?:operations|income|earnings|comprehensive\s+income)|consolidated\s+balance\s+sheets?|consolidated\s+statements?\s+of\s+cash\s+flows?|condensed\s+consolidated\s+financial\s+statements)",
+            r"(?:item\s+8[\.\:\s\-]+(?:consolidated\s+)?financial\s+statements|consolidated\s+statements?\s+of\s+(?:operations|income|earnings|comprehensive\s+income)|consolidated\s+balance\s+sheets?|consolidated\s+statements?\s+of\s+cash\s+flows?|condensed\s+consolidated\s+financial\s+statements)",
             re.IGNORECASE,
         ),
         "financials",
