@@ -46,6 +46,7 @@ from services.llm_fallback_service import llm_fallback_service
 from services.llm_service import llm_service
 from services.output_validation_service import output_validation_service
 from services.query_understanding_service import (
+    COMMON_FINANCIAL_STOPWORDS,
     FINANCIAL_METRIC_MAP,
     query_understanding_service,
 )
@@ -340,7 +341,11 @@ class EvidenceReasoningService:
 
         evidence_chunks = [d.source_text for d in context.documents]
         for m in context.metrics:
-            evidence_chunks.append(f"{m.metric_name} {m.value} {m.period or ''}")
+            evidence_chunks.append(f"{m.metric_name} {m.value} {m.period or ''} {m.document_reference or ''}")
+        for rf in context.red_flags:
+            evidence_chunks.append(f"{rf.title} {rf.description} {rf.category} {rf.severity}")
+        for c in context.comparisons:
+            evidence_chunks.append(f"{c.metric_name} {c.current_value} {c.prior_value} {c.change_percent or ''}")
         all_evidence_text = " ".join(evidence_chunks).lower()
 
         has_metric_match = False
@@ -349,7 +354,7 @@ class EvidenceReasoningService:
         missing_items: List[str] = []
 
         if qu:
-                                     
+            # Check for financial metrics presence
             if qu.financial_signals.metrics:
                 for target_m in qu.financial_signals.metrics:
                     canonical_key = target_m.lower()
@@ -361,30 +366,36 @@ class EvidenceReasoningService:
             else:
                 has_metric_match = True
 
-                                                                  
+            # Check for temporal periods presence
             if qu.temporal_signals.years:
                 grounded_years = []
                 missing_years = []
-                if not qu.financial_signals.metrics:
-                                                                           
-                    for target_y in qu.temporal_signals.years:
-                        year_str = str(target_y)
-                        short_fy = f"FY{year_str[-2:]}".lower()
-                        full_fy = f"FY{year_str}".lower()
-                        if (
-                            year_str in all_evidence_text
-                            or short_fy in all_evidence_text
-                            or full_fy in all_evidence_text
-                        ):
+                for target_y in qu.temporal_signals.years:
+                    year_str = str(target_y)
+                    short_fy = f"fy{year_str[-2:]}"
+                    full_fy = f"fy{year_str}"
+                    has_yr_token = (
+                        year_str in all_evidence_text
+                        or short_fy in all_evidence_text
+                        or full_fy in all_evidence_text
+                    )
+                    if not qu.financial_signals.metrics:
+                        if has_yr_token:
                             grounded_years.append(target_y)
                         else:
                             missing_years.append(target_y)
                             missing_items.append(f"Fiscal Period '{target_y}'")
-                else:
-                    for target_y in qu.temporal_signals.years:
-                        is_grounded = any(
-                            is_year_grounded_with_metric(target_y, m, evidence_chunks)
-                            for m in qu.financial_signals.metrics
+                    else:
+                        is_grounded = has_yr_token and (
+                            any(
+                                is_year_grounded_with_metric(target_y, m, evidence_chunks)
+                                for m in qu.financial_signals.metrics
+                            )
+                            or any(
+                                syn.lower() in all_evidence_text
+                                for m in qu.financial_signals.metrics
+                                for syn in FINANCIAL_METRIC_MAP.get(m.lower(), [m.lower()])
+                            )
                         )
                         if is_grounded:
                             grounded_years.append(target_y)
@@ -392,7 +403,6 @@ class EvidenceReasoningService:
                             missing_years.append(target_y)
                             missing_items.append(f"Fiscal Period '{target_y}' (no reported or projected data found)")
 
-                                                                                               
                 if len(qu.temporal_signals.years) == 1 and missing_years:
                     has_temporal_match = False
                 elif grounded_years:
@@ -404,14 +414,23 @@ class EvidenceReasoningService:
                                       
             if qu.entities:
                 doc_filenames = " ".join([d.document_filename or "" for d in context.documents]).lower()
-                combined_corpus = f"{all_evidence_text} {doc_filenames}"
+                company_snippets = " ".join([d.source_text[:200] for d in context.documents]).lower()
+                combined_corpus = f"{all_evidence_text} {doc_filenames} {company_snippets}"
                 missing_entities = []
                 for target_e in qu.entities:
                     e_clean = target_e.lower()
-                    words_in_e = [w for w in e_clean.split() if w not in {"&", "and", "the", "inc", "corp", "co", "ltd"}]
+                    if e_clean in COMMON_FINANCIAL_STOPWORDS:
+                        continue
+                    words_in_e = [
+                        w for w in e_clean.split()
+                        if w not in {"&", "and", "the", "inc", "corp", "co", "ltd"}
+                        and w not in COMMON_FINANCIAL_STOPWORDS
+                    ]
+                    if not words_in_e:
+                        continue
                     matches_corpus = (
                         e_clean in combined_corpus
-                        or (len(words_in_e) >= 2 and all(w in combined_corpus for w in words_in_e))
+                        or (len(words_in_e) >= 1 and any(w in combined_corpus for w in words_in_e))
                     )
                     if not matches_corpus:
                         missing_entities.append(target_e)
@@ -752,14 +771,21 @@ class EvidenceReasoningService:
         chunk_to_doc = {d.chunk_id: d for d in context.documents}
         citations: List[ResearchCitation] = []
 
-                                                    
+                                                          # 1. Process structured citations returned by LLM JSON
         for idx, raw_cit in enumerate(raw_citations, start=1):
             cit_id = f"cit_{idx:03d}"
-            c_id = raw_cit.get("chunk_id", "")
-            d_id = raw_cit.get("document_id", "")
+            c_id = str(raw_cit.get("chunk_id") or "").strip()
+            d_id = str(raw_cit.get("document_id") or "").strip()
             snippet = raw_cit.get("quoted_snippet", "")
 
-                              
+            # Resolve ordinal placeholder references like CHUNK_1, [CHUNK_2], Chunk 1
+            chunk_ord_match = re.match(r"(?i)^\[?chunk[_\s\-]*(\d+)\]?$", c_id)
+            if chunk_ord_match:
+                ord_idx = int(chunk_ord_match.group(1)) - 1
+                if 0 <= ord_idx < len(context.documents):
+                    c_id = context.documents[ord_idx].chunk_id
+                    d_id = context.documents[ord_idx].document_id
+
             is_valid = True
             err = None
             doc_filename = None
@@ -796,26 +822,33 @@ class EvidenceReasoningService:
                 )
             )
 
-                                                                                           
+        # 2. Extract and resolve inline bracket citations in answer text
         inline_refs = re.findall(
-            r"\[\s*([a-f0-9]{24}_chunk_\d+|[\w\-]+_chunk_\d+|chunk_\d+|chk-[\w\-]+|doc-[\w\-]+|[a-f0-9]{24})\s*\]",
+            r"\[\s*([a-f0-9]{24}_chunk_\d+|[\w\-]+_chunk_\d+|chunk[_\s\-]*\d+|chk-[\w\-]+|doc-[\w\-]+|[a-f0-9]{24})\s*\]",
             answer_text,
             re.IGNORECASE,
         )
         for ref in inline_refs:
-            if not any(c.chunk_id == ref for c in citations):
+            ref_clean = ref.strip()
+            chunk_ord_match = re.match(r"(?i)^chunk[_\s\-]*(\d+)$", ref_clean)
+            if chunk_ord_match:
+                ord_idx = int(chunk_ord_match.group(1)) - 1
+                if 0 <= ord_idx < len(context.documents):
+                    ref_clean = context.documents[ord_idx].chunk_id
+
+            if not any(c.chunk_id == ref_clean for c in citations):
                 cit_id = f"cit_{len(citations) + 1:03d}"
-                is_valid = ref in valid_chunk_ids or ref in valid_doc_ids
-                doc_filename = chunk_to_doc[ref].document_filename if ref in chunk_to_doc else None
-                page_no = chunk_to_doc[ref].page_number if ref in chunk_to_doc else None
-                section_name = chunk_to_doc[ref].section if ref in chunk_to_doc else None
-                snippet = chunk_to_doc[ref].source_text[:120] if ref in chunk_to_doc else ""
+                is_valid = ref_clean in valid_chunk_ids or ref_clean in valid_doc_ids
+                doc_filename = chunk_to_doc[ref_clean].document_filename if ref_clean in chunk_to_doc else None
+                page_no = chunk_to_doc[ref_clean].page_number if ref_clean in chunk_to_doc else None
+                section_name = chunk_to_doc[ref_clean].section if ref_clean in chunk_to_doc else None
+                snippet = chunk_to_doc[ref_clean].source_text[:120] if ref_clean in chunk_to_doc else ""
 
                 citations.append(
                     ResearchCitation(
                         citation_id=cit_id,
-                        chunk_id=ref,
-                        document_id=chunk_to_doc[ref].document_id if ref in chunk_to_doc else ref,
+                        chunk_id=ref_clean,
+                        document_id=chunk_to_doc[ref_clean].document_id if ref_clean in chunk_to_doc else ref_clean,
                         document_filename=doc_filename,
                         page_number=page_no,
                         section=section_name,

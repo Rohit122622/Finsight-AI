@@ -116,7 +116,7 @@ def execute_agent_task(
         max_retries if max_retries is not None else settings.AGENT_MAX_RETRIES
     )
     base_backoff = settings.AGENT_RETRY_BACKOFF_SECONDS
-    current_retry = self.request.retries
+    current_retry = getattr(getattr(self, "request", None), "retries", 0) or 0
 
     start_time = time.time()
     now_utc = datetime.now(timezone.utc)
@@ -147,7 +147,7 @@ def execute_agent_task(
         status=JobStatus.PROCESSING.value,
         model=model_name,
         retry_count=current_retry,
-        worker_id=self.request.hostname,
+        worker_id=getattr(getattr(self, "request", None), "hostname", "worker"),
     )
 
     try:

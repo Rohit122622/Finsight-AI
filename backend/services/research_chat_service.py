@@ -430,7 +430,7 @@ class ResearchChatService:
                 ),
             )
 
-                                                
+        # Standard single or multi-part retrieval
         retrieval_resp = await retrieval_service.retrieve(
             session_id=session_id,
             user_id=user_id,
@@ -442,6 +442,35 @@ class ResearchChatService:
                 document_ids=request.document_ids,
             ),
         )
+
+        # Multi-part / sub-query retrieval orchestration
+        if qu.sub_queries and len(qu.sub_queries) >= 2:
+            all_results: List[RetrievalResult] = list(retrieval_resp.results)
+            seen_chunks: Set[str] = {r.chunk_id for r in all_results}
+            per_sub_k = max(3, request.top_k // len(qu.sub_queries) + 1)
+
+            for sub_q in qu.sub_queries:
+                req_sub = RetrievalRequest(
+                    query=sub_q,
+                    top_k=per_sub_k,
+                    mode=request.mode,
+                    score_threshold=request.score_threshold,
+                    document_ids=request.document_ids,
+                )
+                resp_sub = await retrieval_service.retrieve(
+                    session_id=session_id,
+                    user_id=user_id,
+                    request=req_sub,
+                )
+                for r in resp_sub.results:
+                    if r.chunk_id not in seen_chunks:
+                        seen_chunks.add(r.chunk_id)
+                        all_results.append(r)
+
+            all_results.sort(key=lambda r: r.score, reverse=True)
+            top_results = all_results[: max(request.top_k, 8)]
+            retrieval_resp.results = top_results
+            retrieval_resp.total = len(top_results)
 
                                                                  
         if len(qu.entities) == 1:

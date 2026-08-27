@@ -139,6 +139,10 @@ class QueryUnderstandingResult(BaseModel):
         default_factory=list,
         description="Deterministic query reformulations with domain synonyms (no facts invented)",
     )
+    sub_queries: List[str] = Field(
+        default_factory=list,
+        description="Decomposed sub-questions for multi-part queries",
+    )
     financial_signals: FinancialSignal = Field(
         default_factory=FinancialSignal,
         description="Extracted financial metrics, currencies, and figures",

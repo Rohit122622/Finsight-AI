@@ -51,6 +51,8 @@ COMMON_FINANCIAL_STOPWORDS: Set[str] = {
     "usd", "eur", "gbp", "million", "billion", "trillion", "thousand", "dollars", "percent", "percentage", "bps",
     "company", "companies", "firm", "firms", "business", "businesses", "corporation", "corporate",
     "show", "tell", "give", "find", "get", "calculate", "analyze", "explain", "describe", "provide", "state", "list", "check", "highlight",
+    "disclose", "disclosed", "disclosing", "disclosure", "disclosures", "reported", "reporting", "stated", "stating",
+    "mentioned", "discussed", "given", "indicated", "included", "per", "according", "shown", "biggest", "largest", "smallest", "main", "key", "primary",
 }
 
                                              
@@ -255,8 +257,19 @@ class QueryUnderstandingService:
                                             
         expanded_queries = self.expand_query(normalized, financial_signals)
 
-                                                     
+                                                     # Phase 3B Entity Extraction
         entities = self.extract_entities(raw_query, normalized, request.conversation_history)
+
+        # Multi-part query decomposition into focused sub-queries
+        sub_queries = self.decompose_query(
+            normalized_query=normalized,
+            financial_signals=financial_signals,
+            temporal_signals=temporal_signals,
+            is_multi_step=is_multi_step,
+            entities=entities,
+        )
+        if sub_queries and not is_multi_step:
+            is_multi_step = True
 
                                      
         retrieval_hints = self._generate_retrieval_hints(
@@ -275,6 +288,7 @@ class QueryUnderstandingService:
             requires_context=requires_context,
             context_type=context_type,
             expanded_queries=expanded_queries,
+            sub_queries=sub_queries,
             financial_signals=financial_signals,
             temporal_signals=temporal_signals,
             entities=entities,
@@ -499,6 +513,67 @@ class QueryUnderstandingService:
             return True
 
         return False
+
+    def decompose_query(
+        self,
+        normalized_query: str,
+        financial_signals: FinancialSignal,
+        temporal_signals: TemporalSignal,
+        is_multi_step: bool,
+        entities: Optional[List[str]] = None,
+    ) -> List[str]:
+        """
+        Decompose multi-part, compound, or multi-step questions into independent sub-queries
+        for focused retrieval across document chunks, metrics, and red flags.
+        """
+        sub_queries: List[str] = []
+        clean_q = normalized_query.strip()
+        clean_lower = clean_q.lower()
+
+        # 1. Check for explicit conjunction split patterns
+        split_patterns = [
+            r"\s+(?:and\s+also|and\s+additionally|as\s+well\s+as|along\s+with)\s+",
+            r"\s+and\s+(?:what|how|why|which|tell\s+me|explain|compare|where|show\s+me|find|identify|highlight)\s+",
+            r"\s*;\s*",
+            r"\s*\?\s+(?=[A-Z0-9])",
+        ]
+        for pat in split_patterns:
+            parts = re.split(pat, clean_q, flags=re.IGNORECASE)
+            if len(parts) >= 2:
+                for p in parts:
+                    p_clean = p.strip().rstrip("?.!, ")
+                    if p_clean and len(p_clean) > 5 and p_clean not in sub_queries:
+                        sub_queries.append(p_clean)
+                if len(sub_queries) >= 2:
+                    return sub_queries[:4]
+
+        # 2. Check for "compare X and tell me / show me Y" or "X and Y" risk/metric combinations
+        if " and " in clean_lower:
+            and_parts = clean_q.split(" and ")
+            if len(and_parts) == 2:
+                p1, p2 = and_parts[0].strip(), and_parts[1].strip()
+                if len(p1) > 4 and len(p2) > 4:
+                    sub_queries.append(p1)
+                    sub_queries.append(p2)
+                    return sub_queries
+
+        # 3. Check for multiple distinct metrics (e.g. "revenue and debt", "gross margin and operating margin")
+        if len(financial_signals.metrics) >= 2:
+            ent_str = f" for {entities[0]}" if (entities and len(entities) == 1) else ""
+            years_str = f" in {' and '.join(str(y) for y in temporal_signals.years)}" if temporal_signals.years else ""
+            for m in financial_signals.metrics[:3]:
+                syn = FINANCIAL_METRIC_MAP.get(m, [m])[0]
+                sub_queries.append(f"What was {syn}{ent_str}{years_str}?")
+            if len(sub_queries) >= 2:
+                return sub_queries
+
+        # 4. Multi-entity comparison
+        if entities and len(entities) >= 2:
+            for ent in entities:
+                sub_queries.append(f"{clean_q} for {ent}")
+            return sub_queries
+
+        return []
 
                                                                        
 
