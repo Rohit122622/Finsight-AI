@@ -164,6 +164,33 @@ async def create_indexes(db: AsyncIOMotorDatabase) -> None:
         )
         logger.info("Ensured index: idx_analysis_reports_session_created on analysis_reports(session_id, created_at)")
 
+        # ------------------------------------------------------------------
+        # Collection: red_flags
+        # ------------------------------------------------------------------
+        await db.red_flags.create_index(
+            [("session_id", ASCENDING)],
+            name="idx_red_flags_session_id",
+        )
+        logger.info("Ensured index: idx_red_flags_session_id on red_flags.session_id")
+
+        await db.red_flags.create_index(
+            [("user_id", ASCENDING)],
+            name="idx_red_flags_user_id",
+        )
+        logger.info("Ensured index: idx_red_flags_user_id on red_flags.user_id")
+
+        await db.red_flags.create_index(
+            [("document_id", ASCENDING)],
+            name="idx_red_flags_document_id",
+        )
+        logger.info("Ensured index: idx_red_flags_document_id on red_flags.document_id")
+
+        await db.red_flags.create_index(
+            [("session_id", ASCENDING), ("created_at", DESCENDING)],
+            name="idx_red_flags_session_created",
+        )
+        logger.info("Ensured index: idx_red_flags_session_created on red_flags(session_id, created_at)")
+
                                                                                        
         await db.chat_messages.create_index(
             [("message_id", ASCENDING)],

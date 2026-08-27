@@ -81,14 +81,17 @@ class RedFlagResult(BaseAgentOutput):
     """Output contract for RedFlagAgent."""
 
     session_id: str
+    user_id: Optional[str] = None
+    document_id: Optional[str] = None
     company_name: Optional[str] = None
     total_flags: int = 0
     high_severity_count: int = 0
     flags: List[RedFlagItem] = Field(default_factory=list)
-    risk_score: float = 0.0                                   
+    risk_score: float = 0.0
     overall_assessment: str = ""
     quantitative_flags_count: int = 0
     qualitative_flags_count: int = 0
+    updated_at: Optional[datetime] = None
 
 
 class ComparisonItem(BaseModel):
