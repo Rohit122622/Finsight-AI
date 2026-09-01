@@ -173,7 +173,7 @@ async def run_real_apple_verification():
                                                 
         ret_req = RetrievalRequest(
             query=query_text,
-            top_k=5,
+            top_k=8,
             mode=RetrievalMode.HYBRID,
         )
         ret_resp = await retrieval_service.retrieve(session_id, user_id, ret_req)
@@ -189,6 +189,7 @@ async def run_real_apple_verification():
             session_id=session_id,
             message=query_text,
             stream=False,
+            top_k=8,
         )
         chat_res = await research_chat_service.execute_chat(
             session_id=session_id,

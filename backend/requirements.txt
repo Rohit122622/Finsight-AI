@@ -35,6 +35,7 @@ reportlab==5.0.1
 numpy
 torch
 transformers
+sentence-transformers
 unstructured[pdf]
 easyocr
 

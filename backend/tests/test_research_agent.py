@@ -204,6 +204,65 @@ def test_conversational_follow_up_detection():
     assert "Apple" in res.entities
 
 
+def test_bug5_multi_turn_financial_follow_up_inheritance():
+    """
+    BUG #5 TEST: Multi-turn conversational follow-up:
+    Turn 1: 'What was Apple's revenue in 2025?' -> establishes Apple, revenue, 2025
+    Turn 2: 'What about 2024?' -> inherits Apple and revenue, targets 2024
+    Turn 3: 'How much did it increase?' -> inherits Apple and revenue, comparison between 2024 & 2025
+    Unrelated: 'What is the corporate governance structure?' -> NOT forced into Apple revenue
+    """
+    qu_service = query_understanding_service
+
+    # Turn 1
+    t1_req = QueryUnderstandingRequest(query="What was Apple's revenue in 2025?")
+    t1_res = qu_service.understand_query(t1_req)
+    assert "Apple" in t1_res.entities
+    assert "revenue" in t1_res.financial_signals.metrics
+    assert 2025 in t1_res.temporal_signals.years
+
+    # Turn 2: 'What about 2024?' with Turn 1 in history
+    history_t2 = [
+        {"role": "user", "content": "What was Apple's revenue in 2025?"},
+        {"role": "assistant", "content": "Apple's revenue was $416,161 million in fiscal 2025."},
+    ]
+    t2_req = QueryUnderstandingRequest(
+        query="What about 2024?",
+        conversation_history=history_t2,
+    )
+    t2_res = qu_service.understand_query(t2_req)
+    assert t2_res.is_follow_up is True
+    assert "Apple" in t2_res.entities, f"Turn 2 must inherit entity 'Apple', got {t2_res.entities}"
+    assert "revenue" in t2_res.financial_signals.metrics, f"Turn 2 must inherit metric 'revenue', got {t2_res.financial_signals.metrics}"
+    assert 2024 in t2_res.temporal_signals.years, f"Turn 2 must identify year 2024, got {t2_res.temporal_signals.years}"
+
+    # Turn 3: 'How much did it increase?' with Turns 1 & 2 in history
+    history_t3 = [
+        {"role": "user", "content": "What was Apple's revenue in 2025?"},
+        {"role": "assistant", "content": "Apple's revenue was $416,161 million in fiscal 2025."},
+        {"role": "user", "content": "What about 2024?"},
+        {"role": "assistant", "content": "Apple's revenue in fiscal 2024 was $391,035 million."},
+    ]
+    t3_req = QueryUnderstandingRequest(
+        query="How much did it increase?",
+        conversation_history=history_t3,
+    )
+    t3_res = qu_service.understand_query(t3_req)
+    assert t3_res.is_follow_up is True
+    assert "Apple" in t3_res.entities, f"Turn 3 must inherit entity 'Apple', got {t3_res.entities}"
+    assert "revenue" in t3_res.financial_signals.metrics, f"Turn 3 must inherit metric 'revenue', got {t3_res.financial_signals.metrics}"
+
+    # Unrelated question: must NOT be forced into previous context
+    unrelated_req = QueryUnderstandingRequest(
+        query="What is the audit committee composition?",
+        conversation_history=history_t3,
+    )
+    unrelated_res = qu_service.understand_query(unrelated_req)
+    assert unrelated_res.is_follow_up is False
+    assert "revenue" not in unrelated_res.financial_signals.metrics
+
+
+
 # =====================================================================
 # 6. MongoDB Persistence Tests
 # =====================================================================

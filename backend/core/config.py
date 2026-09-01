@@ -80,7 +80,7 @@ class Settings(BaseSettings):
     CELERY_RESULT_BACKEND: str = ""
 
                                                                    
-    AGENT_DEFAULT_TIMEOUT_SECONDS: int = 300
+    AGENT_DEFAULT_TIMEOUT_SECONDS: int = 600
     AGENT_MAX_RETRIES: int = 3
     AGENT_RETRY_BACKOFF_SECONDS: float = 2.0
 

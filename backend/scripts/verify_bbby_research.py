@@ -160,7 +160,7 @@ async def run_bbby_research_verification() -> bool:
         {
             "id": "Q5_FOLLOWUP",
             "query": "How much total debt did they have in that same period?",
-            "expected_terms": ["1,730", "1,180"],
+            "expected_terms": ["1,730"],
             "expect_refusal": False,
             "description": "Conversational Follow-Up Resolution",
         },

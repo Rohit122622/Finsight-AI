@@ -145,11 +145,11 @@ def build_apple_10k_pdf():
         story.append(Paragraph("PART II", title_style))
         story.append(Paragraph("<b>Item 7. Management's Discussion and Analysis of Financial Condition and Results of Operations</b>", heading2_style))
         story.append(Paragraph(
-            f"Overview (Page {p}): Total net sales increased 6.4% or $25,126 million during fiscal 2025 compared to fiscal 2024, driven by growth in Services and iPhone sales.",
+            f"Overview (Page {p}): Total net sales increased 6.4% or $25,126 million during fiscal 2025 compared to fiscal 2024, driven by growth in Services and iPhone sales. Total net sales were $416,161 million in fiscal 2025, $391,035 million in fiscal 2024, and $383,285 million in fiscal 2023.",
             body_style,
         ))
         story.append(Paragraph(
-            "Gross margin was $192,580 million in fiscal 2025, compared to $180,683 million in fiscal 2024. Operating expenses were $59,850 million, resulting in Operating Income of $132,730 million.",
+            "Gross margin was $192,580 million in fiscal 2025, compared to $180,683 million in fiscal 2024 and $172,685 million in fiscal 2023. Operating expenses were $59,850 million, resulting in Operating Income of $132,730 million.",
             body_style,
         ))
         # Add MD&A metrics table

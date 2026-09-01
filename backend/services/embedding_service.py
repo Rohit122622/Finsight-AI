@@ -10,6 +10,8 @@ import hashlib
 import logging
 import math
 import re
+import threading
+import time
 from typing import Any, Dict, List, Optional
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -19,6 +21,10 @@ from core.config import get_settings
 from database.connection import get_sync_db, mongodb
 
 logger = logging.getLogger(__name__)
+
+# Process-level singleton cache for sentence transformer neural models
+_SHARED_MODELS: Dict[str, Any] = {}
+_MODEL_LOCK = threading.Lock()
 
 
 class EmbeddingService:
@@ -43,29 +49,49 @@ class EmbeddingService:
 
     def _load_model(self) -> None:
         """
-        Lazily load the BAAI/bge-large-en sentence-transformer neural model.
+        Lazily load the BAAI/bge-large-en sentence-transformer neural model with thread-safe process singleton reuse.
         """
-        if self._model_load_attempted:
-            return
+        global _SHARED_MODELS
 
-        self._model_load_attempted = True
-        try:
-            from sentence_transformers import SentenceTransformer
-            import torch
+        with _MODEL_LOCK:
+            if self.model_name in _SHARED_MODELS:
+                self._model = _SHARED_MODELS[self.model_name]
+                self._is_neural_ready = self._model is not None
+                self._model_load_attempted = True
+                return
 
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            logger.info("Loading neural embedding model '%s' on %s...", self.model_name, device)
-            self._model = SentenceTransformer(self.model_name, device=device)
-            self._is_neural_ready = True
-            logger.info("Neural embedding model '%s' successfully loaded (dimension=%d)", self.model_name, self.dimension)
-        except Exception as exc:
-            logger.warning(
-                "Neural model '%s' could not be loaded directly (%s); using high-fidelity 1024-dim projection fallback",
-                self.model_name,
-                exc,
-            )
-            self._model = None
-            self._is_neural_ready = False
+            if self._model_load_attempted:
+                return
+
+            self._model_load_attempted = True
+            t0 = time.time()
+            try:
+                from sentence_transformers import SentenceTransformer
+                import torch
+
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+                logger.info("Loading neural embedding model '%s' on %s...", self.model_name, device)
+                model = SentenceTransformer(self.model_name, device=device)
+                _SHARED_MODELS[self.model_name] = model
+                self._model = model
+                self._is_neural_ready = True
+                load_duration = (time.time() - t0) * 1000
+                logger.info(
+                    "Neural embedding model '%s' successfully loaded in %.1fms (dimension=%d, device=%s)",
+                    self.model_name,
+                    load_duration,
+                    self.dimension,
+                    device,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Neural model '%s' could not be loaded directly (%s); using high-fidelity 1024-dim projection fallback",
+                    self.model_name,
+                    exc,
+                )
+                _SHARED_MODELS[self.model_name] = None
+                self._model = None
+                self._is_neural_ready = False
 
     @property
     def is_neural_active(self) -> bool:
@@ -106,6 +132,7 @@ class EmbeddingService:
         self._load_model()
 
         if self._is_neural_ready and self._model is not None:
+            t0 = time.time()
             try:
                 clean_texts = [t.strip() if (t and t.strip()) else "empty" for t in texts]
                 embeddings = self._model.encode(
@@ -121,6 +148,13 @@ class EmbeddingService:
                         result.append(vec)
                     else:
                         result.append(self._deterministic_feature_embedding("empty"))
+                duration_ms = (time.time() - t0) * 1000
+                logger.info(
+                    "Generated embeddings for %d chunks in %.1fms (%.1fms/chunk)",
+                    len(texts),
+                    duration_ms,
+                    duration_ms / max(len(texts), 1),
+                )
                 return result
             except Exception as exc:
                 logger.warning("Neural batch encoding error, using fallback projection: %s", exc)

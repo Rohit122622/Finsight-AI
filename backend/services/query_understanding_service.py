@@ -47,7 +47,8 @@ COMMON_FINANCIAL_STOPWORDS: Set[str] = {
     "higher", "lower", "better", "worse", "greater", "less", "more", "most", "least", "rates", "rate",
     "diluted", "basic", "eps", "shares", "share", "stock", "price", "valuation", "market", "cap", "capitalization",
     "dividend", "dividends", "payout", "leverage", "liquidity", "segment", "segments", "product", "products",
-    "services", "geographic", "region", "audit", "auditor", "opinion", "material", "weakness", "accounting",
+    "services", "geographic", "region", "audit", "auditor", "auditors", "opinion", "material", "weakness", "accounting",
+    "independent", "management", "board", "directors", "committee", "officer", "officers", "executive", "executives",
     "usd", "eur", "gbp", "million", "billion", "trillion", "thousand", "dollars", "percent", "percentage", "bps",
     "company", "companies", "firm", "firms", "business", "businesses", "corporation", "corporate",
     "show", "tell", "give", "find", "get", "calculate", "analyze", "explain", "describe", "provide", "state", "list", "check", "highlight",
@@ -245,6 +246,39 @@ class QueryUnderstandingService:
             normalized, request.conversation_history
         )
 
+        # Multi-turn Context & Metric Inheritance:
+        # If this is a follow-up turn lacking explicit financial metrics or entity,
+        # inherit them from the previous conversation turns in history.
+        if (is_follow_up or requires_context) and request.conversation_history:
+            if not financial_signals.metrics:
+                for turn in reversed(request.conversation_history[-4:]):
+                    prev_content = turn.get("content", "")
+                    prev_fin = self.extract_financial_signals(self.normalize_query(prev_content))
+                    if prev_fin.metrics:
+                        financial_signals = FinancialSignal(
+                            metrics=prev_fin.metrics,
+                            currencies=financial_signals.currencies or prev_fin.currencies,
+                            percentages=financial_signals.percentages or prev_fin.percentages,
+                            comparison_indicators=financial_signals.comparison_indicators or prev_fin.comparison_indicators,
+                            raw_values=financial_signals.raw_values or prev_fin.raw_values,
+                        )
+                        break
+
+            # If follow-up lacks temporal signals, inherit previous periods from history
+            if not temporal_signals.years:
+                for turn in reversed(request.conversation_history[-4:]):
+                    prev_content = turn.get("content", "")
+                    prev_temp = self.extract_temporal_signals(self.normalize_query(prev_content))
+                    if prev_temp.years:
+                        temporal_signals = TemporalSignal(
+                            years=prev_temp.years,
+                            fiscal_years=temporal_signals.fiscal_years or prev_temp.fiscal_years,
+                            quarters=temporal_signals.quarters or prev_temp.quarters,
+                            date_ranges=temporal_signals.date_ranges or prev_temp.date_ranges,
+                            raw_temporal_terms=temporal_signals.raw_temporal_terms or prev_temp.raw_temporal_terms,
+                        )
+                        break
+
                             
         classification, secondary = self.classify_query(
             normalized,
@@ -254,11 +288,16 @@ class QueryUnderstandingService:
             is_follow_up=is_follow_up,
         )
 
-                                            
-        expanded_queries = self.expand_query(normalized, financial_signals)
-
-                                                     # Phase 3B Entity Extraction
+        # Phase 3B Entity Extraction
         entities = self.extract_entities(raw_query, normalized, request.conversation_history)
+
+        # Query Expansion using domain synonyms, inherited metrics, and temporal context
+        expanded_queries = self.expand_query(
+            normalized,
+            financial_signals=financial_signals,
+            temporal_signals=temporal_signals,
+            entities=entities,
+        )
 
         # Multi-part query decomposition into focused sub-queries
         sub_queries = self.decompose_query(
@@ -724,6 +763,8 @@ class QueryUnderstandingService:
         self,
         normalized_query: str,
         financial_signals: FinancialSignal,
+        temporal_signals: Optional[TemporalSignal] = None,
+        entities: Optional[List[str]] = None,
     ) -> List[str]:
         """
         Generate retrieval-oriented reformulations using financial domain synonyms.
@@ -732,29 +773,32 @@ class QueryUnderstandingService:
         expansions: List[str] = []
         query_lower = normalized_query.lower()
 
-                                                             
         for term, synonyms in QUERY_EXPANSION_DICTIONARY.items():
             pattern = r'\b' + re.escape(term) + r'\b'
             if re.search(pattern, query_lower):
-                for syn in synonyms[:2]:                  
+                for syn in synonyms[:2]:
                     expanded = re.sub(pattern, syn, normalized_query, flags=re.IGNORECASE)
                     if expanded != normalized_query and expanded not in expansions:
                         expansions.append(expanded)
 
-                                                                      
         for metric in financial_signals.metrics:
             if metric in FINANCIAL_METRIC_MAP:
                 synonyms = FINANCIAL_METRIC_MAP[metric]
-                                                                                               
                 primary_name = synonyms[0]
                 if primary_name not in query_lower:
                     expansions.append(f"{normalized_query} ({primary_name})")
 
-                                                                              
         if "risk" in query_lower and "risk factors" not in query_lower:
             expansions.append(normalized_query.replace("risk", "risk factors").replace("risks", "risk factors"))
 
-        return expansions[:4]                              
+        # Add temporal context if years are present in temporal_signals but missing in query
+        if temporal_signals and temporal_signals.years:
+            missing_years = [str(y) for y in temporal_signals.years if str(y) not in query_lower]
+            if missing_years:
+                years_str = " ".join(missing_years)
+                expansions.append(f"{normalized_query} {years_str}")
+
+        return expansions[:6]                              
 
                                                                        
 
@@ -895,10 +939,30 @@ class QueryUnderstandingService:
 
                                                                                        
         if not entities and history:
-            for turn in reversed(history[-4:]):
+            for turn in reversed(history):
+                if turn.get("role") != "user":
+                    continue
                 prev_text = turn.get("content", "")
+                # 1. Possessive match (e.g. "Apple's", "BBBY's", "Microsoft's")
                 for match in re.finditer(r"\b([A-Za-z0-9\.\&\-]+(?:\s+[A-Za-z0-9\.\&\-]+)*)['\u2019]s\b", prev_text):
                     _add_entity(match.group(1).strip())
+
+                # 2. Company suffix pattern in history (e.g. "Bed Bath & Beyond Inc.")
+                if not entities:
+                    for match in re.finditer(suffix_pat, prev_text):
+                        _add_entity(match.group(1).strip())
+
+                # 3. Ticker pattern in history (e.g. "$AAPL", "$BBBY")
+                if not entities:
+                    for match in re.finditer(r"\$([A-Za-z]{1,5})\b", prev_text):
+                        _add_entity(match.group(1).upper())
+
+                # 4. Multi-word capitalized phrases in user turns (e.g. "Bed Bath & Beyond")
+                if not entities:
+                    for match in re.finditer(r"\b([A-Z][a-zA-Z0-9\.\-]*(?:\s+(?:&|and|[A-Z][a-zA-Z0-9\.\-]*))+)\b", prev_text):
+                        cand = match.group(1).strip()
+                        _add_entity(cand)
+
                 if entities:
                     break
 

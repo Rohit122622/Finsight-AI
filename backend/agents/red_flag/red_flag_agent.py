@@ -63,6 +63,312 @@ QUALITATIVE_QUERIES = [
     "debt covenant violations debt restructuring defaults credit rating downgrades liquidity risk credit agreement breach",
 ]
 
+# =====================================================================
+# Canonical Metric Semantic Specifications & Anti-Misclassification Rules
+# =====================================================================
+CANONICAL_METRIC_SEMANTIC_SPECS: Dict[str, Dict[str, Any]] = {
+    "revenue": {
+        "positive_aliases": [
+            "revenue", "net_sales", "total_revenue", "sales", "turnover",
+            "total_net_sales", "revenue_from_operations", "operating_revenue"
+        ],
+        "positive_keywords": [
+            "revenue", "net sales", "total net sales", "total revenue",
+            "revenue from operations", "sales", "turnover", "total sales",
+            "operating revenue"
+        ],
+        "negative_keywords": [
+            "distribution channel", "distribution channels", "channel percentage",
+            "channel percentages", "channel mix", "direct channel", "indirect channel",
+            "direct and indirect", "accounted for", "% of net sales", "% of sales",
+            "% of revenue", "% of total", "percent of net sales", "percent of sales",
+            "percentage of net sales", "percentage of total", "share of sales",
+            "share of revenue", "customer accounted for", "third-party channel",
+            "cellular network", "wholesaler", "retailer", "segment percentage",
+            "segment mix", "geographic mix", "product mix", "investment percentage",
+            "deferred revenue"
+        ],
+        "disallowed_units": ["%", "percent", "percentage", "bps", "basis points", "ratio"],
+        "is_percentage_or_ratio": False,
+    },
+    "prior_revenue": {
+        "positive_aliases": [
+            "prior_revenue", "revenue_prior", "prior_net_sales",
+            "net_sales_prior", "prior_sales"
+        ],
+        "positive_keywords": [
+            "revenue", "net sales", "total net sales", "total revenue",
+            "revenue from operations", "sales", "turnover", "total sales",
+            "operating revenue", "prior revenue", "prior sales"
+        ],
+        "negative_keywords": [
+            "distribution channel", "distribution channels", "channel percentage",
+            "channel percentages", "channel mix", "direct channel", "indirect channel",
+            "direct and indirect", "accounted for", "% of net sales", "% of sales",
+            "% of revenue", "% of total", "percent of net sales", "percent of sales",
+            "percentage of net sales", "percentage of total", "share of sales",
+            "share of revenue", "customer accounted for", "third-party channel",
+            "cellular network", "wholesaler", "retailer", "segment percentage",
+            "segment mix", "geographic mix", "product mix", "investment percentage",
+            "deferred revenue"
+        ],
+        "disallowed_units": ["%", "percent", "percentage", "bps", "basis points", "ratio"],
+        "is_percentage_or_ratio": False,
+    },
+    "total_debt": {
+        "positive_aliases": [
+            "total_debt", "debt", "borrowings", "long_term_debt",
+            "total_liabilities_and_debt", "short_and_long_term_debt",
+            "total_borrowings", "current_debt", "senior_notes",
+            "debt_obligations", "term_loan", "debt_and_obligations"
+        ],
+        "positive_keywords": [
+            "total debt", "long-term debt", "short-term debt", "borrowings",
+            "total borrowings", "debt obligations", "senior notes", "term loan",
+            "term debt", "commercial paper", "credit facility", "debt outstanding",
+            "notes payable", "total liabilities and debt", "current and non-current borrowings",
+            "current portion of long-term debt", "total debt obligations", "debt and obligations"
+        ],
+        "negative_keywords": [
+            "debt investment", "debt investments", "debt securities",
+            "investments in debt", "investment in debt", "available-for-sale debt",
+            "available for sale debt", "held-to-maturity", "held to maturity", "trading debt",
+            "debt instruments held", "investment in debt", "marketable debt",
+            "debt securities available", "foreign debt investments",
+            "fair value of debt securities", "derivative", "bad debt", "doubtful debt",
+            "investment securities", "marketable securities", "securities",
+            "distribution", "channel", "segment"
+        ],
+        "disallowed_units": ["%", "percent", "percentage", "bps", "basis points", "ratio"],
+        "is_percentage_or_ratio": False,
+    },
+    "prior_total_debt": {
+        "positive_aliases": [
+            "prior_total_debt", "total_debt_prior", "prior_debt", "previous_debt"
+        ],
+        "positive_keywords": [
+            "total debt", "long-term debt", "short-term debt", "borrowings",
+            "total borrowings", "debt obligations", "senior notes", "term loan",
+            "term debt", "commercial paper", "credit facility", "debt outstanding",
+            "notes payable", "total liabilities and debt", "prior debt", "debt and obligations"
+        ],
+        "negative_keywords": [
+            "debt investment", "debt investments", "debt securities",
+            "investments in debt", "investment in debt", "available-for-sale debt",
+            "available for sale debt", "held-to-maturity", "held to maturity", "trading debt",
+            "debt instruments held", "investment in debt", "marketable debt",
+            "debt securities available", "foreign debt investments",
+            "fair value of debt securities", "derivative", "bad debt", "doubtful debt",
+            "investment securities", "marketable securities", "securities",
+            "distribution", "channel", "segment"
+        ],
+        "disallowed_units": ["%", "percent", "percentage", "bps", "basis points", "ratio"],
+        "is_percentage_or_ratio": False,
+    },
+    "gross_margin": {
+        "positive_aliases": [
+            "gross_margin", "gross_profit_margin", "gm",
+            "gross_margin_percentage", "gross_profit"
+        ],
+        "positive_keywords": [
+            "gross margin", "gross profit margin", "gross profit",
+            "gross margin percentage", "cost of sales", "cost of goods sold"
+        ],
+        "negative_keywords": [
+            "operating margin", "net margin", "ebitda margin",
+            "operating profit margin", "net profit margin"
+        ],
+        "disallowed_units": [],
+        "is_percentage_or_ratio": True,
+    },
+    "prior_gross_margin": {
+        "positive_aliases": [
+            "prior_gross_margin", "gross_margin_prior", "prior_gm",
+            "prior_gross_profit_margin"
+        ],
+        "positive_keywords": [
+            "gross margin", "gross profit margin", "gross profit",
+            "prior gross margin"
+        ],
+        "negative_keywords": [
+            "operating margin", "net margin", "ebitda margin",
+            "operating profit margin", "net profit margin"
+        ],
+        "disallowed_units": [],
+        "is_percentage_or_ratio": True,
+    },
+    "operating_margin": {
+        "positive_aliases": [
+            "operating_margin", "ebit_margin", "op_margin",
+            "operating_profit_margin", "operating_income_margin"
+        ],
+        "positive_keywords": [
+            "operating margin", "operating profit margin", "operating income margin",
+            "ebit margin", "operating income", "operating profit"
+        ],
+        "negative_keywords": [
+            "gross margin", "gross profit margin", "net margin", "net profit margin"
+        ],
+        "disallowed_units": [],
+        "is_percentage_or_ratio": True,
+    },
+    "prior_operating_margin": {
+        "positive_aliases": [
+            "prior_operating_margin", "operating_margin_prior"
+        ],
+        "positive_keywords": [
+            "operating margin", "operating profit margin", "prior operating margin"
+        ],
+        "negative_keywords": [
+            "gross margin", "gross profit margin", "net margin", "net profit margin"
+        ],
+        "disallowed_units": [],
+        "is_percentage_or_ratio": True,
+    },
+    "operating_cash_flow": {
+        "positive_aliases": [
+            "operating_cash_flow", "operating_cf", "cfo",
+            "cash_flow_from_operations", "net_cash_from_operating_activities",
+            "net_cash_provided_by_operating_activities", "cash_generated_from_operations",
+            "operating_cashflow"
+        ],
+        "positive_keywords": [
+            "operating cash flow", "cash flows from operating activities",
+            "cash from operations", "operating activities", "cash provided by operating",
+            "cash used in operating", "net cash from operating", "cash generated from operations"
+        ],
+        "negative_keywords": [
+            "investing activities", "financing activities", "free cash flow",
+            "capital expenditures"
+        ],
+        "disallowed_units": ["%", "percent", "percentage", "bps", "basis points", "ratio"],
+        "is_percentage_or_ratio": False,
+    },
+    "net_income": {
+        "positive_aliases": [
+            "net_income", "net_profit", "earnings", "net_earnings",
+            "profit_after_tax", "profit for the year", "pat", "net_loss"
+        ],
+        "positive_keywords": [
+            "net income", "net profit", "net loss", "net earnings",
+            "profit after tax", "profit for the year", "pat", "bottom line"
+        ],
+        "negative_keywords": [
+            "operating income", "gross profit", "operating profit", "ebitda", "ebit"
+        ],
+        "disallowed_units": ["%", "percent", "percentage", "bps", "basis points", "ratio"],
+        "is_percentage_or_ratio": False,
+    },
+    "total_equity": {
+        "positive_aliases": [
+            "total_equity", "stockholders_equity", "shareholders_equity",
+            "equity", "total_shareholders_equity", "accumulated_deficit",
+            "members_equity", "net_worth", "shareholders equity", "stockholders equity"
+        ],
+        "positive_keywords": [
+            "stockholders' equity", "shareholders' equity", "total equity",
+            "total shareholders' equity", "total stockholders' equity",
+            "accumulated deficit", "members' equity", "net worth",
+            "shareholders equity", "stockholders equity"
+        ],
+        "negative_keywords": [
+            "total liabilities", "debt to equity", "debt-to-equity", "liabilities and equity"
+        ],
+        "disallowed_units": ["%", "percent", "percentage", "bps", "basis points", "ratio"],
+        "is_percentage_or_ratio": False,
+    },
+    "prior_total_equity": {
+        "positive_aliases": [
+            "prior_total_equity", "equity_prior", "prior_equity"
+        ],
+        "positive_keywords": [
+            "stockholders' equity", "shareholders' equity", "total equity",
+            "total shareholders' equity", "prior equity"
+        ],
+        "negative_keywords": [
+            "total liabilities", "debt to equity", "debt-to-equity"
+        ],
+        "disallowed_units": ["%", "percent", "percentage", "bps", "basis points", "ratio"],
+        "is_percentage_or_ratio": False,
+    },
+    "debt_to_equity": {
+        "positive_aliases": [
+            "debt_to_equity", "debt_to_equity_ratio", "d_e_ratio", "leverage_ratio"
+        ],
+        "positive_keywords": [
+            "debt-to-equity", "debt to equity", "d/e ratio", "leverage ratio",
+            "total debt to equity"
+        ],
+        "negative_keywords": [
+            "current ratio", "quick ratio", "price to earnings"
+        ],
+        "disallowed_units": [],
+        "is_percentage_or_ratio": True,
+    },
+}
+
+
+def validate_metric_semantics(target_key: str, item: Dict[str, Any]) -> bool:
+    """
+    Validate that an extracted metric candidate semantically matches the canonical target metric.
+    Prevents false positives where unrelated values (e.g. distribution channel percentages for revenue,
+    debt investments for total debt) are misclassified.
+    """
+    spec = CANONICAL_METRIC_SEMANTIC_SPECS.get(target_key)
+    if not spec:
+        return True
+
+    # 1. Disallowed Unit Check
+    unit = str(item.get("unit") or "").lower().strip()
+    if unit:
+        for du in spec["disallowed_units"]:
+            if du in unit or unit == du:
+                logger.debug(
+                    "Semantic validation rejected candidate for '%s': disallowed unit '%s'",
+                    target_key, unit,
+                )
+                return False
+
+    # 2. Textual context inspection (evidence_snippet, context_snippet, display_name, metric_name)
+    ev_snip = str(item.get("evidence_snippet") or item.get("context_snippet") or "").lower()
+    disp_name = str(item.get("display_name") or "").lower()
+    m_name = str(item.get("metric_name") or "").lower()
+    combined_ctx = f"{disp_name} {m_name} {ev_snip}"
+
+    # Check negative keywords/patterns
+    for neg_kw in spec["negative_keywords"]:
+        if re.search(r"\b" + re.escape(neg_kw) + r"\b", combined_ctx, re.IGNORECASE) or neg_kw in combined_ctx:
+            logger.debug(
+                "Semantic validation rejected candidate for '%s': conflicting concept '%s' found in context '%s'",
+                target_key, neg_kw, combined_ctx[:80],
+            )
+            return False
+
+    # 3. Ambiguity & positive concept validation:
+    # If the candidate's metric_name is a generic term (e.g. 'debt', 'sales', 'margin'),
+    # or if target is total_debt / revenue, ensure evidence contains a positive indicator confirming the canonical concept.
+    is_generic_alias = m_name in {"debt", "sales", "margin", "income", "equity", "borrowings"}
+    if is_generic_alias and ev_snip:
+        has_positive = any(
+            re.search(r"\b" + re.escape(pos_kw) + r"\b", combined_ctx, re.IGNORECASE) or pos_kw in combined_ctx
+            for pos_kw in spec["positive_keywords"]
+        )
+        if not has_positive:
+            logger.debug(
+                "Semantic validation rejected ambiguous generic metric '%s' for '%s': lacks positive confirmation in '%s'",
+                m_name, target_key, ev_snip[:80],
+            )
+            return False
+
+    # 4. Total Debt Specific Guard:
+    # Ensure debt candidate is genuine liability/obligation, not an asset/investment.
+    if target_key in {"total_debt", "prior_total_debt"}:
+        if any(term in combined_ctx for term in ["investment", "investments", "marketable", "available-for-sale", "held-to-maturity"]):
+            logger.debug("Semantic validation rejected total_debt candidate with investment context: '%s'", combined_ctx[:80])
+            return False
+
+    return True
+
 
 class RedFlagAgent(BaseAgent):
     """
@@ -368,8 +674,10 @@ class RedFlagAgent(BaseAgent):
         margin = metrics.get("gross_margin")
         prior_margin = metrics.get("prior_gross_margin")
         if margin is not None and prior_margin is not None:
-            drop = prior_margin - margin
-            meta = _build_flag_meta("gross_margin", f"gross_margin={margin:.3f}, prior_gross_margin={prior_margin:.3f}")
+            norm_margin = margin / 100.0 if margin > 1.0 else margin
+            norm_prior_margin = prior_margin / 100.0 if prior_margin > 1.0 else prior_margin
+            drop = norm_prior_margin - norm_margin
+            meta = _build_flag_meta("gross_margin", f"gross_margin={norm_margin:.3f}, prior_gross_margin={norm_prior_margin:.3f}")
             if drop >= MARGIN_DROP_HIGH_THRESHOLD:
                 flags.append(
                     RedFlagItem(
@@ -377,8 +685,8 @@ class RedFlagAgent(BaseAgent):
                         category="Profitability",
                         title="Severe Gross Margin Compression",
                         description=(
-                            f"Gross margin compressed sharply by {drop * 100:.1f} percentage points (from "
-                            f"{prior_margin * 100:.1f}% to {margin * 100:.1f}%), signaling acute pricing pressure or rising cost structure."
+                            f"Gross margin declined from {norm_prior_margin * 100:.1f}% to {norm_margin * 100:.1f}%, "
+                            f"a decrease of {drop * 100:.1f} percentage points, signaling acute pricing pressure or rising cost structure."
                         ),
                         source="QUANTITATIVE",
                         metric_name="gross_margin",
@@ -393,8 +701,8 @@ class RedFlagAgent(BaseAgent):
                         category="Profitability",
                         title="Falling Gross Margin",
                         description=(
-                            f"Gross margin declined by {drop * 100:.1f} percentage points (from "
-                            f"{prior_margin * 100:.1f}% to {margin * 100:.1f}%), exceeding the 5% margin compression threshold."
+                            f"Gross margin declined from {norm_prior_margin * 100:.1f}% to {norm_margin * 100:.1f}%, "
+                            f"a decrease of {drop * 100:.1f} percentage points, exceeding the 5.0 percentage point margin compression threshold."
                         ),
                         source="QUANTITATIVE",
                         metric_name="gross_margin",
@@ -409,8 +717,10 @@ class RedFlagAgent(BaseAgent):
         op_margin = metrics.get("operating_margin")
         prior_op_margin = metrics.get("prior_operating_margin")
         if op_margin is not None and prior_op_margin is not None:
-            op_drop = prior_op_margin - op_margin
-            meta = _build_flag_meta("operating_margin", f"operating_margin={op_margin:.3f}, prior_operating_margin={prior_op_margin:.3f}")
+            norm_op = op_margin / 100.0 if op_margin > 1.0 else op_margin
+            norm_prior_op = prior_op_margin / 100.0 if prior_op_margin > 1.0 else prior_op_margin
+            op_drop = norm_prior_op - norm_op
+            meta = _build_flag_meta("operating_margin", f"operating_margin={norm_op:.3f}, prior_operating_margin={norm_prior_op:.3f}")
             if op_drop >= MARGIN_DROP_HIGH_THRESHOLD:
                 flags.append(
                     RedFlagItem(
@@ -418,8 +728,8 @@ class RedFlagAgent(BaseAgent):
                         category="Profitability",
                         title="Severe Operating Margin Compression",
                         description=(
-                            f"Operating margin fell {op_drop * 100:.1f} percentage points (from "
-                            f"{prior_op_margin * 100:.1f}% to {op_margin * 100:.1f}%), indicating severe operational cost inflation."
+                            f"Operating margin fell from {norm_prior_op * 100:.1f}% to {norm_op * 100:.1f}%, "
+                            f"a decrease of {op_drop * 100:.1f} percentage points, indicating severe operational cost inflation."
                         ),
                         source="QUANTITATIVE",
                         metric_name="operating_margin",
@@ -434,8 +744,8 @@ class RedFlagAgent(BaseAgent):
                         category="Profitability",
                         title="Declining Operating Margin",
                         description=(
-                            f"Operating margin declined {op_drop * 100:.1f} percentage points (from "
-                            f"{prior_op_margin * 100:.1f}% to {op_margin * 100:.1f}%)."
+                            f"Operating margin declined from {norm_prior_op * 100:.1f}% to {norm_op * 100:.1f}%, "
+                            f"a decrease of {op_drop * 100:.1f} percentage points."
                         ),
                         source="QUANTITATIVE",
                         metric_name="operating_margin",
@@ -845,6 +1155,10 @@ class RedFlagAgent(BaseAgent):
                     text_lower = text.lower()
                     sec = (ch.get("section") or "").lower()
 
+                    # Semantic filtering: do not resolve provenance to chunks describing conflicting concepts
+                    if not validate_metric_semantics(metric_key, {"evidence_snippet": text, "display_name": ""}):
+                        continue
+
                     score = 0
                     if any(ps in sec for ps in pref_sections):
                         score += 4
@@ -936,6 +1250,13 @@ class RedFlagAgent(BaseAgent):
                     existing.document_filename = flag.document_filename
                 if not existing.document_id and flag.document_id:
                     existing.document_id = flag.document_id
+
+                # Prefer mathematically deterministic quantitative titles and descriptions over qualitative LLM text
+                if flag.source == "QUANTITATIVE" and existing.source != "QUANTITATIVE":
+                    existing.title = flag.title
+                    existing.description = flag.description
+                    existing.source = flag.source
+                    existing.metric_name = flag.metric_name
 
                 if len(flag.evidence_snippet or "") > len(existing.evidence_snippet or ""):
                     existing.evidence_snippet = flag.evidence_snippet
@@ -1068,52 +1389,14 @@ class RedFlagAgent(BaseAgent):
         self, metrics: Optional[Any]
     ) -> Tuple[Dict[str, Optional[float]], Dict[str, Dict[str, Any]]]:
         """
-        Extract and normalize metrics dictionary with robust alias handling,
-        while extracting any existing provenance metadata.
+        Extract and normalize metrics dictionary with robust alias handling and strict semantic validation,
+        while extracting verified provenance metadata.
         """
         if not metrics:
             return {}, {}
 
         raw_dict: Dict[str, Any] = {}
         provenance: Dict[str, Dict[str, Any]] = {}
-
-        if isinstance(metrics, dict):
-            raw_dict = metrics
-        elif isinstance(metrics, list):
-            grouped: Dict[str, List[Dict[str, Any]]] = {}
-            for item in metrics:
-                if isinstance(item, dict) and "metric_name" in item:
-                    m_name = str(item["metric_name"]).lower().strip()
-                    grouped.setdefault(m_name, []).append(item)
-                    # Extract provenance if available
-                    cids = item.get("source_chunk_ids") or ([item["chunk_id"]] if item.get("chunk_id") else [])
-                    if cids or item.get("context_snippet") or item.get("page_number"):
-                        provenance[m_name] = {
-                            "source_chunk_ids": cids,
-                            "chunk_id": cids[0] if cids else None,
-                            "page_number": item.get("page_number"),
-                            "section": item.get("section"),
-                            "document_id": item.get("document_id"),
-                            "document_filename": item.get("document_filename"),
-                            "evidence_snippet": item.get("context_snippet") or item.get("evidence_snippet"),
-                        }
-
-            for m_name, items in grouped.items():
-                def _sort_key(it: Dict[str, Any]) -> int:
-                    yr = it.get("fiscal_year") or it.get("year") or it.get("period")
-                    if isinstance(yr, int):
-                        return yr
-                    if isinstance(yr, str):
-                        nums = re.findall(r"\b(19\d\d|20\d\d)\b", yr)
-                        if nums:
-                            return int(nums[0])
-                    return 0
-
-                sorted_items = sorted(items, key=_sort_key, reverse=True)
-                if sorted_items:
-                    raw_dict[m_name] = sorted_items[0].get("value")
-                    if len(sorted_items) > 1:
-                        raw_dict[f"prior_{m_name}"] = sorted_items[1].get("value")
 
         def _to_float(val: Any) -> Optional[float]:
             if val is None:
@@ -1133,35 +1416,124 @@ class RedFlagAgent(BaseAgent):
                         return float(figs[0].numeric_value)
             return None
 
+        rejected_keys: Set[str] = set()
+
+        # Case 1: List of metric records (from ExtractionAgent or MongoDB)
+        if isinstance(metrics, list) or (isinstance(metrics, dict) and "metrics" in metrics and isinstance(metrics["metrics"], list)):
+            flat_items: List[Dict[str, Any]] = []
+            metrics_list = metrics if isinstance(metrics, list) else metrics["metrics"]
+            for m in metrics_list:
+                if isinstance(m, dict):
+                    if "metrics" in m and isinstance(m["metrics"], list):
+                        for sub_m in m["metrics"]:
+                            if isinstance(sub_m, dict):
+                                flat_items.append(sub_m)
+                    if "metrics_dict" in m and isinstance(m["metrics_dict"], dict):
+                        raw_dict.update({k: v for k, v in m["metrics_dict"].items() if v is not None})
+                    if "metric_name" in m:
+                        flat_items.append(m)
+
+            # Map items to target canonical keys with semantic validation
+            for target_key, spec in CANONICAL_METRIC_SEMANTIC_SPECS.items():
+                matching_items: List[Dict[str, Any]] = []
+                had_candidate = False
+                for item in flat_items:
+                    m_name = str(item.get("metric_name") or "").lower().strip()
+                    m_alias_clean = m_name.replace(" ", "_")
+                    if m_name in spec["positive_aliases"] or m_alias_clean in spec["positive_aliases"]:
+                        had_candidate = True
+                        # Validate semantics before accepting
+                        if validate_metric_semantics(target_key, item):
+                            matching_items.append(item)
+
+                if had_candidate and not matching_items:
+                    # All candidates for this target key failed semantic validation
+                    rejected_keys.add(target_key)
+                    if not target_key.startswith("prior_"):
+                        rejected_keys.add(f"prior_{target_key}")
+
+                if matching_items:
+                    def _sort_key(it: Dict[str, Any]) -> int:
+                        yr = it.get("fiscal_year") or it.get("year") or it.get("period")
+                        if isinstance(yr, int):
+                            return yr
+                        if isinstance(yr, str):
+                            nums = re.findall(r"\b(19\d\d|20\d\d)\b", yr)
+                            if nums:
+                                return int(nums[0])
+                        return 0
+
+                    sorted_items = sorted(matching_items, key=_sort_key, reverse=True)
+                    best_item = sorted_items[0]
+                    parsed_val = _to_float(best_item.get("value"))
+                    if parsed_val is not None:
+                        raw_dict[target_key] = parsed_val
+                        cids = best_item.get("source_chunk_ids") or ([best_item["chunk_id"]] if best_item.get("chunk_id") else [])
+                        provenance[target_key] = {
+                            "source_chunk_ids": cids,
+                            "chunk_id": cids[0] if cids else None,
+                            "page_number": best_item.get("page_number") or (best_item.get("page_numbers", [None])[0] if best_item.get("page_numbers") else None),
+                            "section": best_item.get("section"),
+                            "document_id": best_item.get("document_id"),
+                            "document_filename": best_item.get("document_filename"),
+                            "evidence_snippet": best_item.get("context_snippet") or best_item.get("evidence_snippet"),
+                        }
+
+                    # Check prior period if available
+                    if len(sorted_items) > 1:
+                        prior_item = sorted_items[1]
+                        parsed_prior = _to_float(prior_item.get("value"))
+                        if parsed_prior is not None:
+                            prior_key = f"prior_{target_key}" if not target_key.startswith("prior_") else target_key
+                            raw_dict[prior_key] = parsed_prior
+                    elif best_item.get("prior_value") is not None:
+                        parsed_prior = _to_float(best_item.get("prior_value"))
+                        if parsed_prior is not None:
+                            prior_key = f"prior_{target_key}" if not target_key.startswith("prior_") else target_key
+                            raw_dict[prior_key] = parsed_prior
+
+        # Case 2: Dict input (e.g. direct payload or extracted_data dict)
+        if isinstance(metrics, dict):
+            if "metrics_dict" in metrics and isinstance(metrics["metrics_dict"], dict):
+                raw_dict.update({k: v for k, v in metrics["metrics_dict"].items() if v is not None})
+            for k, v in metrics.items():
+                if k != "metrics" and k != "metrics_dict" and v is not None:
+                    raw_dict[k] = v
+
         normalized: Dict[str, Optional[float]] = {}
+        for target_key, spec in CANONICAL_METRIC_SEMANTIC_SPECS.items():
+            if target_key in rejected_keys:
+                continue
 
-        key_mappings = {
-            "revenue": ["revenue", "net_sales", "total_revenue", "sales", "turnover", "total_net_sales"],
-            "prior_revenue": ["prior_revenue", "revenue_prior", "prior_net_sales", "net_sales_prior", "prior_sales"],
-            "total_debt": ["total_debt", "debt", "borrowings", "long_term_debt", "total_liabilities_and_debt", "short_and_long_term_debt", "total_borrowings", "current_debt"],
-            "prior_total_debt": ["prior_total_debt", "total_debt_prior", "prior_debt", "previous_debt"],
-            "gross_margin": ["gross_margin", "gross_profit_margin", "gm", "gross_margin_percentage"],
-            "prior_gross_margin": ["prior_gross_margin", "gross_margin_prior", "prior_gm", "prior_gross_profit_margin"],
-            "operating_margin": ["operating_margin", "ebit_margin", "op_margin", "operating_profit_margin"],
-            "prior_operating_margin": ["prior_operating_margin", "operating_margin_prior"],
-            "operating_cash_flow": ["operating_cash_flow", "operating_cf", "cfo", "cash_flow_from_operations", "net_cash_from_operating_activities", "net_cash_provided_by_operating_activities", "cash_generated_from_operations", "operating_cashflow"],
-            "net_income": ["net_income", "net_profit", "earnings", "net_earnings", "profit_after_tax"],
-            "total_equity": ["total_equity", "stockholders_equity", "shareholders_equity", "equity", "total_shareholders_equity"],
-            "prior_total_equity": ["prior_total_equity", "equity_prior", "prior_equity"],
-            "total_assets": ["total_assets", "assets"],
-        }
+            if target_key in raw_dict and raw_dict[target_key] is not None:
+                parsed = _to_float(raw_dict[target_key])
+                if parsed is not None:
+                    # Check if provenance exists for this key and validate semantics
+                    if target_key in provenance:
+                        prov_info = provenance[target_key]
+                        if not validate_metric_semantics(target_key, prov_info):
+                            # Invalidated by provenance evidence
+                            continue
+                    normalized[target_key] = parsed
+                    continue
 
-        for target_key, aliases in key_mappings.items():
-            for alias in aliases:
+            # Fallback alias lookup in raw_dict
+            for alias in spec["positive_aliases"]:
                 alias_clean = alias.lower().replace(" ", "_")
                 val = raw_dict.get(alias) if alias in raw_dict else raw_dict.get(alias_clean)
                 if val is None:
                     alias_spaced = alias.replace("_", " ")
                     val = raw_dict.get(alias_spaced)
                 if val is not None:
+                    # If provenance is available for this alias, validate it
+                    if alias in provenance:
+                        if not validate_metric_semantics(target_key, provenance[alias]):
+                            continue
                     parsed = _to_float(val)
                     if parsed is not None:
                         normalized[target_key] = parsed
+                        if alias in provenance and target_key not in provenance:
+                            provenance[target_key] = provenance[alias]
                         break
 
         return normalized, provenance

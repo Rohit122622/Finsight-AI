@@ -35,23 +35,56 @@ class DocumentResult(BaseAgentOutput):
 
 
 class ExtractionMetricItem(BaseModel):
-    """Individual financial metric extracted from a document."""
+    """Individual financial metric extracted from a document with exact provenance and grounding."""
 
     metric_name: str
-    value: Any
+    value: Optional[float] = None
+    prior_value: Optional[float] = None
+    display_name: Optional[str] = None
     unit: Optional[str] = None
+    currency: Optional[str] = None
     period: Optional[str] = None
-    confidence: float = 1.0
+    prior_period: Optional[str] = None
+    yoy_change_percent: Optional[float] = None
+    yoy_change_absolute: Optional[float] = None
+    source_chunk_ids: List[str] = Field(default_factory=list)
+    page_numbers: List[int] = Field(default_factory=list)
+    page_number: Optional[int] = None
+    section: Optional[str] = None
+    evidence_snippet: Optional[str] = None
     context_snippet: Optional[str] = None
+    confidence: float = 1.0
+    confidence_score: float = 1.0
+    is_low_confidence: bool = False
+    flag_reason: Optional[str] = None
+    derivation_formula: Optional[str] = None
+    is_grounded: bool = True
+    status: str = "VALID"
 
 
 class ExtractionResult(BaseAgentOutput):
-    """Output contract for ExtractionAgent."""
+    """Output contract for ExtractionAgent (Phase 2C Master Plan compliant)."""
 
     session_id: str
     document_id: Optional[str] = None
+    document_filename: Optional[str] = None
+    filing_type: Optional[str] = None
+    reporting_currency: Optional[str] = None
+    reporting_scale: Optional[str] = None
+    reporting_period: Optional[str] = None
+    prior_period: Optional[str] = None
     metrics: List[ExtractionMetricItem] = Field(default_factory=list)
+    metrics_dict: Dict[str, Optional[float]] = Field(default_factory=dict)
+    multi_year_data: Dict[str, Dict[str, Optional[float]]] = Field(default_factory=dict)
+    extracted_data: Dict[str, Any] = Field(default_factory=dict)
     raw_extraction: Dict[str, Any] = Field(default_factory=dict)
+    chunks_analyzed: int = 0
+    financial_chunks_count: int = 0
+    retry_attempted: bool = False
+    retry_success: Optional[bool] = None
+    confidence_average: float = 1.0
+    low_confidence_count: int = 0
+    failed_metrics_count: int = 0
     summary: str = ""
 
 

@@ -1,11 +1,5 @@
-"""
-MongoDB Atlas connection manager using Motor (async driver).
-
-Provides async lifecycle hooks for FastAPI startup/shutdown and a
-get_database() helper that returns the active database handle.
-"""
-
 import logging
+import threading
 from typing import Optional
 
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
@@ -32,6 +26,7 @@ class MongoDB:
         self._client: Optional[AsyncIOMotorClient] = None
         self._database: Optional[AsyncIOMotorDatabase] = None
         self._loop = None
+        self._lock = threading.Lock()
 
     async def connect(self) -> None:
         """
@@ -48,13 +43,20 @@ class MongoDB:
             self._loop = None
 
         try:
+            if self._client is not None:
+                try:
+                    self._client.close()
+                except Exception:
+                    pass
+
             self._client = AsyncIOMotorClient(
                 settings.MONGODB_URI,
                 maxPoolSize=50,
-                minPoolSize=10,
-                maxIdleTimeMS=30_000,
-                connectTimeoutMS=10_000,
+                minPoolSize=1,
+                maxIdleTimeMS=45_000,
+                connectTimeoutMS=15_000,
                 serverSelectionTimeoutMS=10_000,
+                socketTimeoutMS=30_000,
                 retryWrites=True,
                 retryReads=True,
             )
@@ -80,7 +82,7 @@ class MongoDB:
 
     def get_db(self) -> AsyncIOMotorDatabase:
         """
-        Return the active database handle, binding to the current running event loop.
+        Return the active database handle, binding safely to the current running event loop.
         """
         settings = get_settings()
         import asyncio
@@ -90,25 +92,37 @@ class MongoDB:
         except RuntimeError:
             current_loop = None
 
-                                                                                              
         if (
             self._client is None
             or self._database is None
             or (current_loop is not None and self._loop != current_loop)
             or (self._loop is not None and self._loop.is_closed())
         ):
-            self._loop = current_loop
-            self._client = AsyncIOMotorClient(
-                settings.MONGODB_URI,
-                maxPoolSize=50,
-                minPoolSize=10,
-                maxIdleTimeMS=30_000,
-                connectTimeoutMS=10_000,
-                serverSelectionTimeoutMS=10_000,
-                retryWrites=True,
-                retryReads=True,
-            )
-            self._database = self._client[settings.DATABASE_NAME]
+            with self._lock:
+                if (
+                    self._client is None
+                    or self._database is None
+                    or (current_loop is not None and self._loop != current_loop)
+                    or (self._loop is not None and self._loop.is_closed())
+                ):
+                    if self._client is not None:
+                        try:
+                            self._client.close()
+                        except Exception:
+                            pass
+                    self._loop = current_loop
+                    self._client = AsyncIOMotorClient(
+                        settings.MONGODB_URI,
+                        maxPoolSize=50,
+                        minPoolSize=1,
+                        maxIdleTimeMS=45_000,
+                        connectTimeoutMS=15_000,
+                        serverSelectionTimeoutMS=10_000,
+                        socketTimeoutMS=30_000,
+                        retryWrites=True,
+                        retryReads=True,
+                    )
+                    self._database = self._client[settings.DATABASE_NAME]
 
         return self._database
 
@@ -138,30 +152,35 @@ class SyncMongoDB:
     def __init__(self) -> None:
         self._client: Optional[MongoClient] = None
         self._database: Optional[Database] = None
+        self._lock = threading.Lock()
 
     def get_db(self) -> Database:
         """Return the active synchronous pymongo Database instance."""
         if self._database is None:
-            settings = get_settings()
-            self._client = MongoClient(
-                settings.MONGODB_URI,
-                maxPoolSize=20,
-                minPoolSize=2,
-                maxIdleTimeMS=30_000,
-                connectTimeoutMS=10_000,
-                serverSelectionTimeoutMS=10_000,
-                retryWrites=True,
-                retryReads=True,
-            )
-            self._database = self._client[settings.DATABASE_NAME]
+            with self._lock:
+                if self._database is None:
+                    settings = get_settings()
+                    self._client = MongoClient(
+                        settings.MONGODB_URI,
+                        maxPoolSize=20,
+                        minPoolSize=1,
+                        maxIdleTimeMS=45_000,
+                        connectTimeoutMS=15_000,
+                        serverSelectionTimeoutMS=10_000,
+                        socketTimeoutMS=30_000,
+                        retryWrites=True,
+                        retryReads=True,
+                    )
+                    self._database = self._client[settings.DATABASE_NAME]
         return self._database
 
     def close(self) -> None:
         """Close the synchronous client."""
-        if self._client is not None:
-            self._client.close()
-            self._client = None
-            self._database = None
+        with self._lock:
+            if self._client is not None:
+                self._client.close()
+                self._client = None
+                self._database = None
 
 
 sync_mongodb = SyncMongoDB()

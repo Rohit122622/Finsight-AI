@@ -106,7 +106,7 @@ class DocumentAgent(BaseAgent):
         )
 
         try:
-
+            t0 = time.time()
             content = self._retrieve_bytes(
                 storage_path=storage_path,
                 user_id=user_id,
@@ -115,7 +115,7 @@ class DocumentAgent(BaseAgent):
                 filename=filename,
                 metadata_extra=meta_extra,
             )
-
+            retrieval_ms = round((time.time() - t0) * 1000, 1)
 
             ext = filename.lower().split(".")[-1] if "." in filename else ""
             ocr_invoked = False
@@ -123,9 +123,12 @@ class DocumentAgent(BaseAgent):
             page_segments: List[Dict[str, Any]] = []
             extracted_tables: List[ExtractedTable] = []
             full_text = ""
+            pdf_inspect_ms = 0.0
+            text_extract_ms = 0.0
+            table_extract_ms = 0.0
 
             if ext == "pdf":
-
+                t_detect = time.time()
                 detect_res = pdf_detection_service.inspect_pdf(content)
 
                 if not detect_res.is_valid_pdf:
@@ -137,8 +140,9 @@ class DocumentAgent(BaseAgent):
                     raise NonRetryableAgentException("PDF document is encrypted or password-protected.")
 
                 page_count = detect_res.page_count
+                pdf_inspect_ms = round((time.time() - t_detect) * 1000, 1)
 
-
+                t_text = time.time()
                 if force_ocr or detect_res.requires_ocr:
                     logger.info("PDF requires OCR (scanned or image-based): invoking OCR service for %s", filename)
                     ocr_invoked = True
@@ -150,22 +154,24 @@ class DocumentAgent(BaseAgent):
                         logger.error("OCR execution error for document %s: %s", document_id, ocr_exc)
                         raise NonRetryableAgentException(f"OCR processing failed for scanned document: {ocr_exc}")
                 else:
-
                     logger.info("PDF is text-based: extracting text layer directly without OCR for %s", filename)
                     full_text, page_count, page_segments = self._extract_pdf_text_native(content)
+                text_extract_ms = round((time.time() - t_text) * 1000, 1)
 
-
+                t_table = time.time()
                 try:
                     extracted_tables = table_extraction_service.extract_tables_from_pdf_bytes(content)
                 except Exception as tbl_exc:
                     logger.warning("Table extraction non-fatal warning for %s: %s", document_id, tbl_exc)
                     extracted_tables = []
+                table_extract_ms = round((time.time() - t_table) * 1000, 1)
 
             else:
-
+                t_text = time.time()
                 full_text, page_count, page_segments = self._extract_non_pdf_text(filename, content)
+                text_extract_ms = round((time.time() - t_text) * 1000, 1)
 
-
+            t_chunk = time.time()
             parsed_chunks: List[ParsedChunk] = chunking_service.chunk_document_content(
                 document_id=document_id,
                 session_id=session_id,
@@ -176,11 +182,14 @@ class DocumentAgent(BaseAgent):
                 overlap_tokens=chunk_overlap_tokens,
                 filename=filename,
             )
+            chunking_ms = round((time.time() - t_chunk) * 1000, 1)
 
-
+            t_embed = time.time()
             chunk_texts = [c.text for c in parsed_chunks]
             embeddings = embedding_service.generate_embeddings_batch(chunk_texts)
+            embedding_ms = round((time.time() - t_embed) * 1000, 1)
 
+            t_prep = time.time()
             chunks_data: List[Dict[str, Any]] = []
             section_breakdown: Dict[str, int] = {}
             total_tokens = 0
@@ -194,7 +203,6 @@ class DocumentAgent(BaseAgent):
                 sec_name = c.section or "other"
                 section_breakdown[sec_name] = section_breakdown.get(sec_name, 0) + 1
                 total_tokens += c.token_estimate
-
 
                 doc_chunk = DocumentChunk(
                     chunk_id=c.chunk_id,
@@ -220,10 +228,26 @@ class DocumentAgent(BaseAgent):
                 )
                 chunks_data.append(doc_chunk.model_dump())
 
-
             word_count = len(full_text.split()) if full_text else sum(len(c.text.split()) for c in parsed_chunks)
             char_count = len(full_text) if full_text else sum(c.character_count for c in parsed_chunks)
             summary_preview = (full_text[:300] + "...") if len(full_text) > 300 else full_text
+
+            stage_timings = {
+                "retrieval_ms": retrieval_ms,
+                "pdf_inspection_ms": pdf_inspect_ms,
+                "text_extraction_ms": text_extract_ms,
+                "table_extraction_ms": table_extract_ms,
+                "chunking_ms": chunking_ms,
+                "embedding_generation_ms": embedding_ms,
+                "total_doc_agent_ms": round((time.time() - start_time) * 1000, 1),
+            }
+            logger.info(
+                "DocumentAgent completed stages for %s (%d pages, %d chunks): %s",
+                filename,
+                page_count,
+                len(chunks_data),
+                stage_timings,
+            )
 
             doc_meta = DocumentMetadata(
                 page_count=page_count,
@@ -240,12 +264,13 @@ class DocumentAgent(BaseAgent):
                     "section_breakdown": section_breakdown,
                     "embedding_model": embedding_service.model_name,
                     "embedding_dimension": embedding_service.dimension,
+                    "stage_timings": stage_timings,
                 },
             )
 
             updated_at = datetime.now(timezone.utc)
 
-
+            t_db = time.time()
             db.documents.update_one(
                 {"document_id": document_id},
                 {
@@ -258,6 +283,8 @@ class DocumentAgent(BaseAgent):
                     }
                 },
             )
+            stage_timings["db_persistence_ms"] = round((time.time() - t_db) * 1000, 1)
+            stage_timings["total_doc_agent_ms"] = round((time.time() - start_time) * 1000, 1)
 
             latency_ms = int((time.time() - start_time) * 1000)
 

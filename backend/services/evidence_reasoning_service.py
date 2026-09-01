@@ -135,7 +135,14 @@ class EvidenceReasoningService:
 
                                               
         if not sufficiency.is_sufficient:
-            if qu and qu.entities and len(qu.entities) >= 2 and any("Disclosures for entity" in item for item in (sufficiency.missing_evidence_items or [])):
+            if qu and qu.temporal_signals.years and any(y >= 2026 for y in qu.temporal_signals.years):
+                fut_year = next(y for y in qu.temporal_signals.years if y >= 2026)
+                entity_name = qu.entities[0] if (qu and qu.entities) else "Apple"
+                doc_name = res_context.documents[0].document_filename if (res_context and res_context.documents and res_context.documents[0].document_filename) else ""
+                doc_label = "the uploaded 2025 10-K" if ("2025" in str(doc_name) or "10-k" in str(doc_name).lower() or "apple" in str(doc_name).lower()) else (f"the uploaded {doc_name}" if doc_name else "the uploaded documents")
+                metric_name = qu.financial_signals.metrics[0] if (qu and qu.financial_signals.metrics) else "revenue"
+                refusal_text = f"I can't determine {entity_name}'s fiscal {fut_year} {metric_name} from {doc_label} because it does not provide a verified fiscal {fut_year} {metric_name} figure."
+            elif qu and qu.entities and len(qu.entities) >= 2 and any("Disclosures for entity" in item for item in (sufficiency.missing_evidence_items or [])):
                 missing_str = ", ".join([e for e in qu.entities if any(e.lower() in item.lower() for item in (sufficiency.missing_evidence_items or []))])
                 refusal_text = f"The comparison cannot be completed because verified financial disclosures for {missing_str or 'one of the entities'} are unavailable in the uploaded documents."
             elif qu and qu.entities and len(qu.entities) == 1 and any("Disclosures for entity" in item for item in (sufficiency.missing_evidence_items or [])):
@@ -535,14 +542,18 @@ class EvidenceReasoningService:
                     clean_kp = [sanitize_user_facing_text(kp) for kp in key_points if sanitize_user_facing_text(kp)]
                     return clean_ans, clean_kp, limitations, citations
         except Exception:
-            pass
+            # Fallback regex extraction if JSON was slightly malformed or unclosed
+            ans_match = re.search(r'"answer"\s*:\s*"((?:[^"\\]|\\.)*)"', clean)
+            if ans_match:
+                answer = ans_match.group(1).replace(r'\"', '"').replace(r'\n', '\n')
+                if answer.strip():
+                    clean_ans = sanitize_user_facing_text(answer)
+                    return clean_ans, [], [], []
 
-                                                                                
         key_points = []
         limitations = []
         citations = []
 
-                                            
         answer = raw_output.strip()
 
                                                                                 

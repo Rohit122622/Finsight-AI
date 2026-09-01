@@ -138,8 +138,10 @@ export default function SessionDetail() {
   }, [loadSession, loadDocuments, loadReports]);
 
   
+  // Fallback polling only when WebSocket is disconnected or inactive
   useEffect(() => {
     if (!sessionId || !activeJobId) return;
+    if (isConnected) return;
 
     let consecutiveErrors = 0;
 
@@ -159,15 +161,14 @@ export default function SessionDetail() {
         }
       } catch {
         consecutiveErrors += 1;
-        
         if (consecutiveErrors >= 3) {
           setActiveJobId(null);
         }
       }
-    }, 2000);
+    }, 5000);
 
     return () => clearInterval(interval);
-  }, [sessionId, activeJobId, loadReports, loadDocuments]);
+  }, [sessionId, activeJobId, isConnected, loadReports, loadDocuments]);
 
   
   useEffect(() => {

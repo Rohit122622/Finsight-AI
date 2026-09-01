@@ -6,6 +6,7 @@ and bidirectional evidence grounding verification across unstructured text,
 Markdown tables, and structured disclosures.
 """
 
+import math
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -14,9 +15,9 @@ from typing import Any, Dict, List, Optional, Set, Tuple
                                                                                         
 FINANCIAL_FIGURE_PATTERN = re.compile(
     r"""
-    (?P<prefix>[\$€£¥])?\s*                # Optional currency symbol
+    (?P<prefix>[\$€£¥₹])?\s*                # Optional currency symbol
     (?P<neg_open>[\(\-])?\s*              # Optional negative indicator (bracket or minus)
-    (?P<prefix_inner>[\$€£¥])?\s*         # Optional currency symbol inside bracket $(100)
+    (?P<prefix_inner>[\$€£¥₹])?\s*         # Optional currency symbol inside bracket $(100)
     (?P<number>
         \d{1,3}(?:,\d{3})+(?:\.\d+)?      # Comma-formatted numbers: 416,161 or 1,234,567.89
         |
@@ -34,6 +35,85 @@ FINANCIAL_FIGURE_PATTERN = re.compile(
 
                                            
 YEAR_PATTERN = re.compile(r"^(?:19\d\d|20\d\d)$")
+
+
+def safe_parse_financial_number(val: Any) -> Optional[float]:
+    """
+    Safely parse any raw value or string into a float without throwing exceptions.
+    NEVER calls float() on empty or malformed strings.
+    
+    Handles:
+      - None, empty strings, whitespace -> None
+      - ints and floats (excluding NaN and Inf) -> float
+      - Comma-formatted numbers: "383,285" -> 383285.0
+      - Currency symbols: "$383,285", "₹50,000", "€1,200.50", "£400" -> float
+      - Percentages: "31.6%", "19.8 %" -> 31.6, 19.8
+      - Parenthesized negative numbers: "(508)", "$(508)", "($508)", "( 508.50 )" -> -508.0, -508.0, -508.0, -508.5
+      - Explicit negative signs: "-508", "-$508", "$-508", "- 508.2" -> -508.0, -508.0, -508.0, -508.2
+      - Non-numeric strings / missing indicators: "N/A", "-", "—", "abc", "$", "()" -> None
+    """
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        if math.isnan(val) or math.isinf(val):
+            return None
+        return float(val)
+    if not isinstance(val, str):
+        try:
+            val = str(val)
+        except Exception:
+            return None
+
+    s = val.strip()
+    if not s:
+        return None
+
+    s_lower = s.lower()
+    if s_lower in {"none", "null", "n/a", "na", "nil", "-", "—", "--", "–", "unavailable", "unknown", "nan", "inf", "-inf"}:
+        return None
+
+    # Check for negative indication via parentheses or negative sign
+    is_neg = False
+    if s.startswith("(") and s.endswith(")"):
+        is_neg = True
+        s = s[1:-1].strip()
+    elif s.startswith("-") or s.endswith("-"):
+        is_neg = True
+        s = s.strip("-").strip()
+    elif "(" in s and ")" in s:
+        paren_match = re.search(r'\(\s*([^)]+)\s*\)', s)
+        if paren_match:
+            is_neg = True
+            s = paren_match.group(1).strip()
+
+    # Strip currency symbols, commas, percent signs, and whitespace
+    clean_s = re.sub(r'[\$€£¥₹,%\s]', '', s)
+    if clean_s.startswith("-"):
+        is_neg = True
+        clean_s = clean_s[1:].strip()
+
+    if not clean_s:
+        return None
+
+    # Validate numeric format
+    if re.match(r'^\d+(?:\.\d+)?$', clean_s):
+        try:
+            num = float(clean_s)
+            if math.isnan(num) or math.isinf(num):
+                return None
+            return -num if is_neg else num
+        except (ValueError, TypeError, OverflowError):
+            pass
+
+    # Fallback to financial figure extractor
+    figs = extract_financial_figures(val)
+    if figs:
+        num = figs[0].numeric_value
+        if math.isnan(num) or math.isinf(num):
+            return None
+        return float(num)
+
+    return None
 
 
 class FinancialFigure:
@@ -83,13 +163,15 @@ def extract_financial_figures(text: str) -> List[FinancialFigure]:
     """
     Extract all financial figures, currencies, percentages, and amounts from text.
     Correctly flags standalone 4-digit calendar/fiscal years so they are not treated as monetary figures.
+    Filters out page numbers, note references, and document section indices.
     """
     figures: List[FinancialFigure] = []
     if not text:
         return figures
 
-                                                                       
+    # Clean chunk tags, section markers, page indicators, note headers, table numbers to avoid capturing them as financial figures
     clean_text = re.sub(r"\[[\w\s\-\:\.\_\/]+\]", " ", text.strip())
+    clean_text = re.sub(r"\(?\b(?:Page|Item|Note|Section|Part|Table|Exhibit|Figure)\s+\d+[A-Za-z0-9\.\(\)\-]*\)?", " ", clean_text, flags=re.IGNORECASE)
 
     for match in FINANCIAL_FIGURE_PATTERN.finditer(clean_text):
         raw_match = match.group(0).strip()
@@ -102,10 +184,9 @@ def extract_financial_figures(text: str) -> List[FinancialFigure]:
         neg_close = match.group("neg_close")
         scale = match.group("scale")
 
-        is_neg = bool(neg_open == "(" or (neg_open == "(" and neg_close == ")") or (neg_open == "-" and prefix))
+        is_neg = bool((neg_open == "(" and neg_close == ")") or (neg_open == "-" and prefix))
         curr = prefix if prefix else None
         
-                                  
         is_pct = False
         parsed_scale = None
         if scale:
@@ -121,7 +202,6 @@ def extract_financial_figures(text: str) -> List[FinancialFigure]:
             elif s_low in ["t", "trillion"]:
                 parsed_scale = "trillion"
 
-                               
         clean_num_str = num_str.replace(",", "")
         try:
             val = float(clean_num_str)
@@ -130,12 +210,10 @@ def extract_financial_figures(text: str) -> List[FinancialFigure]:
         except ValueError:
             continue
 
-                                                                           
-                                                                                 
+        # Check for fiscal or calendar year
         is_yr = False
         if not curr and not is_pct and not parsed_scale:
             if YEAR_PATTERN.match(clean_num_str):
-                                                                                                
                 start_idx = max(0, match.start() - 15)
                 pre_context = clean_text[start_idx:match.start()].lower()
                 if any(w in pre_context for w in ["fiscal", "year", "fy", "in ", "dated", "ended", "period"]):
@@ -143,9 +221,19 @@ def extract_financial_figures(text: str) -> List[FinancialFigure]:
                 elif 1990 <= int(clean_num_str) <= 2050:
                     is_yr = True
 
-                                                                                                                                        
-        if not curr and not is_pct and not parsed_scale and not (neg_open == "(") and "," not in num_str and not is_yr:
+        # Skip numbers with preceding page / item / note keywords if unadorned
+        start_idx = max(0, match.start() - 15)
+        pre_context = clean_text[start_idx:match.start()].lower()
+        if any(w in pre_context for w in ["page", "item", "note", "section", "part", "table", "figure"]) and not curr and not is_pct:
             continue
+
+        # Skip unformatted standalone plain numbers unless explicitly currency, percent, scale, negative bracket, comma-formatted, or fiscal year
+        if not curr and not is_pct and not parsed_scale and not (neg_open == "(" and neg_close == ")") and "," not in num_str and not is_yr:
+            # Allow decimal metrics like EPS (e.g. 7.46, 6.11) only if near EPS or per-share context
+            if "." in num_str and any(w in pre_context for w in ["eps", "share", "per"]):
+                pass
+            else:
+                continue
 
         fig = FinancialFigure(
             raw_text=raw_match,
@@ -468,7 +556,7 @@ def is_year_grounded_with_metric(
                                                                                                                                                       
 INTERNAL_ID_PATTERN = re.compile(
     r"""
-    [\[【]\s*
+    (?:[\[\(\<【])?\s*
     (?:
         chunk_[\w\-]+                       # chunk_0, chunk_forecast_2030, chunk_58
         |
@@ -482,7 +570,7 @@ INTERNAL_ID_PATTERN = re.compile(
         |
         [a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12} # Standalone UUID bracket
     )
-    \s*[\]】]
+    (?:\:\d+)?\s*(?:[\]\)\>】])?
     """,
     re.VERBOSE | re.IGNORECASE,
 )

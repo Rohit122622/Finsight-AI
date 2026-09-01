@@ -472,6 +472,34 @@ class ResearchChatService:
             retrieval_resp.results = top_results
             retrieval_resp.total = len(top_results)
 
+        # Retrieval Query Expansion Merging (e.g. domain synonyms, temporal signals, inherited entities)
+        elif qu.expanded_queries:
+            all_results: List[RetrievalResult] = list(retrieval_resp.results)
+            seen_chunks: Set[str] = {r.chunk_id for r in all_results}
+
+            for exp_q in qu.expanded_queries[:3]:
+                req_exp = RetrievalRequest(
+                    query=exp_q,
+                    top_k=request.top_k,
+                    mode=request.mode,
+                    score_threshold=request.score_threshold,
+                    document_ids=request.document_ids,
+                )
+                resp_exp = await retrieval_service.retrieve(
+                    session_id=session_id,
+                    user_id=user_id,
+                    request=req_exp,
+                )
+                for r in resp_exp.results:
+                    if r.chunk_id not in seen_chunks:
+                        seen_chunks.add(r.chunk_id)
+                        all_results.append(r)
+
+            all_results.sort(key=lambda r: r.score, reverse=True)
+            top_results = all_results[: max(request.top_k, 8)]
+            retrieval_resp.results = top_results
+            retrieval_resp.total = len(top_results)
+
                                                                  
         if len(qu.entities) == 1:
             target_entity = qu.entities[0].lower()
@@ -587,7 +615,7 @@ class ResearchChatService:
                 QueryUnderstandingRequest(
                     query=request.message,
                     session_id=session_id,
-                    recent_history=[{"role": m.role, "content": m.content} for m in context_messages[-4:]],
+                    conversation_history=[{"role": m.role, "content": m.content} for m in context_messages],
                 )
             )
             trace_ctx.end_stage("query_understanding")

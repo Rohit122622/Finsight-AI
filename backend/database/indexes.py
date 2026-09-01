@@ -191,6 +191,37 @@ async def create_indexes(db: AsyncIOMotorDatabase) -> None:
         )
         logger.info("Ensured index: idx_red_flags_session_created on red_flags(session_id, created_at)")
 
+        # ------------------------------------------------------------------
+        # Collection: extracted_metrics (Consolidated one record per document)
+        # ------------------------------------------------------------------
+        from database.migrations import migrate_extracted_metrics_collection
+        await migrate_extracted_metrics_collection(db)
+
+        await db.extracted_metrics.create_index(
+            [("document_id", ASCENDING), ("session_id", ASCENDING)],
+            unique=True,
+            name="idx_extracted_metrics_doc_session_unique",
+        )
+        logger.info("Ensured index: idx_extracted_metrics_doc_session_unique on extracted_metrics(document_id, session_id)")
+
+        await db.extracted_metrics.create_index(
+            [("session_id", ASCENDING)],
+            name="idx_extracted_metrics_session_id",
+        )
+        logger.info("Ensured index: idx_extracted_metrics_session_id on extracted_metrics.session_id")
+
+        await db.extracted_metrics.create_index(
+            [("user_id", ASCENDING)],
+            name="idx_extracted_metrics_user_id",
+        )
+        logger.info("Ensured index: idx_extracted_metrics_user_id on extracted_metrics.user_id")
+
+        await db.extracted_metrics.create_index(
+            [("session_id", ASCENDING), ("updated_at", DESCENDING)],
+            name="idx_extracted_metrics_session_updated",
+        )
+        logger.info("Ensured index: idx_extracted_metrics_session_updated on extracted_metrics(session_id, updated_at)")
+
                                                                                        
         await db.chat_messages.create_index(
             [("message_id", ASCENDING)],

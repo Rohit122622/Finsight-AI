@@ -22,27 +22,56 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
           ws: true,
           configure: (proxy) => {
+            const HARMLESS_CODES = new Set([
+              "ECONNRESET",
+              "ECONNABORTED",
+              "EPIPE",
+              "ECONNREFUSED",
+            ]);
+
+            const suppressSocketErrors = (s: any) => {
+              if (!s || typeof s.emit !== "function" || s.__finsentry_suppressed) return;
+              s.__finsentry_suppressed = true;
+              const origEmit = s.emit.bind(s);
+              s.emit = function (event: any, ...args: any[]) {
+                if (event === "error") {
+                  const err = args[0] as any;
+                  if (err && HARMLESS_CODES.has(err?.code)) {
+                    return false;
+                  }
+                }
+                return origEmit(event, ...args);
+              };
+            };
+
+            // Intercept harmless errors emitted directly on WS sockets and requests
+            proxy.on("proxyReqWs", (proxyReq: any, req: any, socket: any) => {
+              suppressSocketErrors(socket);
+              suppressSocketErrors(proxyReq);
+              suppressSocketErrors(req?.socket);
+            });
+
+            (proxy as any).on("proxySocket", (proxySocket: any) => {
+              suppressSocketErrors(proxySocket);
+            });
+
+            // Suppress harmless disconnects on the proxy instance itself while logging genuine errors
+            const originalEmit = proxy.emit.bind(proxy);
+            (proxy as any).emit = function (event: any, ...args: any[]) {
+              if (event === "error") {
+                const err = args[0] as any;
+                if (err && HARMLESS_CODES.has(err?.code)) {
+                  return false;
+                }
+              }
+              return (originalEmit as any)(event, ...args);
+            };
+
             proxy.on("error", (err: any) => {
-              if (
-                err.code === "ECONNRESET" ||
-                err.code === "ECONNABORTED" ||
-                err.code === "EPIPE"
-              ) {
+              if (err && HARMLESS_CODES.has(err?.code)) {
                 return;
               }
               console.error("[Vite Proxy Error]:", err);
-            });
-            proxy.on("proxyReqWs", (_proxyReq, _req, socket) => {
-              socket.on("error", (err: any) => {
-                if (
-                  err.code === "ECONNRESET" ||
-                  err.code === "ECONNABORTED" ||
-                  err.code === "EPIPE"
-                ) {
-                  return;
-                }
-                console.error("[Vite WS Proxy Socket Error]:", err);
-              });
             });
           },
         },
