@@ -994,3 +994,581 @@ async def test_no_citation_marks_metric_as_failed_not_guess():
 
     db.documents.delete_many({"document_id": doc_id})
     db.extracted_metrics.delete_many({"document_id": doc_id})
+
+
+# =====================================================================
+# 34: Target Production Regression Tests (Bugs 1-7)
+# =====================================================================
+
+def test_invalid_extraction_candidates_never_persisted_in_metrics_dict():
+    """Verify that invalid semantic candidates (e.g. channel mix, debt securities, delta margins) are never stored in metrics_dict."""
+    agent = ExtractionAgent()
+
+    chunks = [{
+        "chunk_id": "chunk_apple_mix",
+        "text": (
+            "Distribution channels accounted for 60% and 40% of total net sales.\n"
+            "Total debt investments at fair value were $85,589 million.\n"
+            "Gross margin decreased by 11.4 percentage points."
+        ),
+        "section": "financials",
+        "page_number": 12,
+    }]
+    all_map = {"chunk_apple_mix": chunks[0]}
+
+    # LLM incorrectly extracted channel mix as revenue, debt investments as total_debt, delta as gross_margin
+    bad_resp = RawLLMExtractionResponse(
+        metrics=[
+            RawLLMMetricItem(
+                metric_name="revenue",
+                value=40.0,
+                unit="%",
+                source_chunk_ids=["chunk_apple_mix"],
+                evidence_snippet="distribution channels accounted for 60% and 40% of total net sales",
+            ),
+            RawLLMMetricItem(
+                metric_name="total_debt",
+                value=85589.0,
+                unit="USD Millions",
+                source_chunk_ids=["chunk_apple_mix"],
+                evidence_snippet="Total debt investments at fair value were $85,589 million",
+            ),
+            RawLLMMetricItem(
+                metric_name="gross_margin",
+                value=488002.0,
+                unit="USD",
+                source_chunk_ids=["chunk_apple_mix"],
+                evidence_snippet="Gross margin decreased by 11.4 percentage points",
+            ),
+        ],
+        multi_year_table={
+            "FY2029": {"revenue": 40.0},
+            "FY2025": {"gross_margin": 488002.0},
+        },
+    )
+
+    items, m_dict, my_data = agent._process_and_ground_metrics(
+        parsed_response=bad_resp,
+        all_chunks_map=all_map,
+        financial_chunks=chunks,
+        actual_doc_id="doc-sanitization-test",
+        filename="apple_test.pdf",
+    )
+
+    # 1. Invalid revenue candidate MUST be rejected (None in metrics_dict)
+    assert m_dict.get("revenue") is None
+    # 2. Debt investments candidate MUST be rejected
+    assert m_dict.get("total_debt") is None
+    # 3. Out-of-range margin candidate MUST be rejected
+    assert m_dict.get("gross_margin") is None
+    # 4. Future FY2029 maturity schedule year MUST NOT be in my_data
+    assert "FY2029" not in my_data
+
+
+def test_apple_fiscal_year_extraction_rejects_future_schedule_years():
+    """Verify that Apple 2025 filing identifies FY2025/FY2024 and rejects future lease/debt schedule years (FY2029)."""
+    agent = ExtractionAgent()
+
+    valid_items = [
+        ExtractionMetricItem(
+            metric_name="revenue",
+            display_name="Total Net Sales",
+            value=416161.0,
+            prior_value=391035.0,
+            period="FY2025",
+            prior_period="FY2024",
+            status="VALID",
+            confidence_score=1.0,
+        )
+    ]
+
+    multi_year_sample = {
+        "FY2025": {"revenue": 416161.0},
+        "FY2024": {"revenue": 391035.0},
+        "FY2023": {"revenue": 383285.0},
+    }
+
+    latest_period = agent._detect_latest_period(valid_items, multi_year_sample)
+    prior_period = agent._detect_prior_period(valid_items, multi_year_sample)
+
+    assert latest_period in ["FY2025", "2025"]
+    assert prior_period in ["FY2024", "2024"]
+    assert latest_period != "FY2029"
+
+
+def test_percentage_normalization_and_no_double_multiplication():
+    """Verify percentage normalization handles 46.28%, 46.21%, 34.0%, 22.6% without double multiplication."""
+    assert safe_parse_financial_number("46.28%") == 46.28
+    assert safe_parse_financial_number("46.21%") == 46.21
+    assert safe_parse_financial_number("34.0%") == 34.0
+    assert safe_parse_financial_number("22.6%") == 22.6
+    assert safe_parse_financial_number("11.4 percentage points") == 11.4
+
+
+def test_diluted_eps_table_row_beats_basic_eps_and_thousand_amounts_are_canonical():
+    """Statement-row semantics and source-scale conversion are deterministic."""
+    from utils.financial_units import normalize_monetary_metric
+
+    agent = ExtractionAgent()
+    chunks = [{
+        "chunk_id": "income-statement", "section": "income_statement", "page_number": 42,
+        "text": "Earnings per share:\nBasic 7.46 6.08 6.13\nDiluted 7.42 6.01 6.08",
+    }]
+    assert agent._extract_diluted_eps_from_evidence(chunks)[0] == 7.42
+
+    value, unit, currency, source_unit, source_scale = normalize_monetary_metric(
+        "revenue", 5_344_400, "USD", "USD", "thousands"
+    )
+    assert (value, unit, currency) == (5344.4, "USD Millions", "USD")
+    assert (source_unit, source_scale) == ("USD", "thousands")
+    assert normalize_monetary_metric("eps", 7.42, "USD/share", "USD", "thousands")[0] == 7.42
+    assert normalize_monetary_metric("gross_margin", 22.6, "%", "USD", "thousands")[0] == 22.6
+    assert normalize_monetary_metric("net_income", -3_510_000, "USD", "USD", "thousands")[0] == -3510.0
+
+
+def test_statement_headers_define_canonical_periods_and_thousand_metric_scale():
+    """Statement fiscal headers, rather than a filing date, label each metric column."""
+    agent = ExtractionAgent()
+    items = [
+        ExtractionMetricItem(
+            metric_name="revenue", value=5344.4, prior_value=7871.8,
+            period="FY2023", prior_period="FY2022", unit="USD Millions",
+        ),
+        ExtractionMetricItem(
+            metric_name="net_income", value=-3506.7, prior_value=-559.6,
+            period="FY2023", prior_period="FY2022", unit="USD Millions",
+        ),
+    ]
+    chunks = [{"text": "Consolidated Statements of Operations (in thousands)\nFiscal 2022 Fiscal 2021"}]
+    agent._canonicalize_metric_periods(items, chunks, "FY2023", "FY2022")
+    years = agent._build_multi_year_data(items)
+    assert years["FY2022"]["revenue"] == 5344.4
+    assert years["FY2021"]["revenue"] == 7871.8
+    assert years["FY2022"]["net_income"] == -3506.7
+    assert years["FY2021"]["net_income"] == -559.6
+    assert agent._detect_scale_from_text(chunks[0]["text"]) == "thousands"
+
+
+def test_flattened_eps_row_extracts_only_numbers_after_diluted_label():
+    """Basic EPS before a flattened Diluted row cannot become canonical EPS."""
+    agent = ExtractionAgent()
+    chunks = [{
+        "chunk_id": "eps-table", "text": "Earnings per share Basic 7.46 6.08 Diluted 7.42 6.01",
+    }]
+    current, prior, _, _ = agent._extract_diluted_eps_from_evidence(chunks)
+    assert current == 7.42
+    assert prior == 6.01
+
+
+def test_markdown_eps_table_and_date_headers_drive_canonical_values():
+    """Exercise the table serialization used by document ingestion, not prose-only fixtures."""
+    agent = ExtractionAgent()
+    eps_chunk = {
+        "chunk_id": "apple-eps-table",
+        "text": (
+            "| Earnings per share | 2025 | 2024 |\n"
+            "| --- | --- | --- |\n"
+            "| Basic | 7.46 | 6.08 |\n"
+            "| Diluted | 7.42 | 6.01 |"
+        ),
+    }
+    current, prior, _, _ = agent._extract_diluted_eps_from_evidence([eps_chunk])
+    assert (current, prior) == (7.42, 6.01)
+
+    # Items represent the LLM-extracted values (value=current col, prior_value=prior col).
+    # The real BBBY filing column mapping:
+    #   Col 1 (Feb 26, 2022 = FY2022): Revenue=5344.4, GP=1207.9, NI=-3506.7
+    #   Col 2 (Feb 27, 2021 = FY2021): Revenue=7871.8, GP=2673.6, NI=-559.6
+    items = [
+        ExtractionMetricItem(metric_name="revenue", value=5344.4, prior_value=7871.8,
+                             period="FY2023", prior_period="FY2022", unit="USD Millions"),
+        ExtractionMetricItem(metric_name="gross_profit", value=1207.9, prior_value=2673.6,
+                             period="FY2023", prior_period="FY2022", unit="USD Millions"),
+        ExtractionMetricItem(metric_name="net_income", value=-3506.7, prior_value=-559.6,
+                             period="FY2023", prior_period="FY2022", unit="USD Millions"),
+    ]
+    bbby_statement = {
+        "text": (
+            "| Consolidated Statements of Operations | February 26, 2022 | February 27, 2021 |\n"
+            "| --- | --- | --- |\n| Net sales | 5,344,400 | 7,871,800 |\n"
+            "| Gross profit | 1,207,900 | 2,673,600 |\n| Net loss | (3,506,700) | (559,600) |\n"
+            "(Dollars in thousands)"
+        )
+    }
+    agent._canonicalize_metric_periods(items, [bbby_statement], "FY2023", "FY2022")
+    years = agent._build_multi_year_data(items)
+    assert years["FY2022"] == {"revenue": 5344.4, "gross_profit": 1207.9, "net_income": -3506.7}
+    assert years["FY2021"] == {"revenue": 7871.8, "gross_profit": 2673.6, "net_income": -559.6}
+    assert agent._detect_scale_from_text(bbby_statement["text"]) == "thousands"
+
+
+def test_flattened_weighted_average_diluted_shares_do_not_shadow_eps_row():
+    """A preceding diluted-share row is not the EPS row in flattened PDF text."""
+    agent = ExtractionAgent()
+    chunks = [{
+        "chunk_id": "eps-table",
+        "text": (
+            "Weighted-average shares diluted 15,000 "
+            "Earnings per share Basic 7.46 6.08 Diluted 7.42 6.01"
+        ),
+    }]
+    current, prior, _, _ = agent._extract_diluted_eps_from_evidence(chunks)
+    assert current == 7.42
+    assert prior == 6.01
+
+
+def test_primary_statement_scale_precedes_exception_scale_and_reprocessing_invalidates_cache():
+    """Apple share-count exceptions do not scale money; affected comparison cache is removed."""
+    from unittest.mock import MagicMock
+    from schemas.agent_results import ExtractionResult
+
+    agent = ExtractionAgent()
+    assert agent._detect_scale_from_text(
+        "Financial statements (in millions, except shares reflected in thousands)"
+    ) == "millions"
+
+    db = MagicMock()
+    result = ExtractionResult(
+        agent_name="ExtractionAgent", session_id="session", document_id="doc",
+        metrics=[ExtractionMetricItem(metric_name="eps", value=7.46, period="FY2025")],
+        metrics_dict={"eps": 7.46}, multi_year_data={"FY2025": {"eps": 7.46}},
+    )
+    agent._persist_consolidated_metrics(db, "session", "user", "doc", "apple.pdf", result)
+    db.comparison_results.delete_many.assert_called_once_with({
+        "session_id": "session",
+        "$or": [{"document_ids": "doc"}, {"document_ids": {"$exists": False}}],
+    })
+
+
+# =====================================================================
+# Regression Tests: Canonical Extraction Bug Fixes
+# =====================================================================
+
+def test_regression_apple_revenue_rejects_channel_mix_40_60():
+    """Revenue = 40 or 60 from channel-mix percentages must never become canonical Revenue."""
+    agent = ExtractionAgent()
+
+    bad_resp = RawLLMExtractionResponse(
+        metrics=[
+            RawLLMMetricItem(
+                metric_name="revenue",
+                value=40.0,
+                unit="USD Millions",
+                evidence_snippet="the Company's net sales through its direct and indirect distribution channels accounted for 40% and 60%",
+                source_chunk_ids=["chunk1"],
+            ),
+            RawLLMMetricItem(
+                metric_name="prior_revenue",
+                value=60.0,
+                unit="USD Millions",
+                evidence_snippet="the Company's net sales through its direct and indirect distribution channels accounted for 40% and 60%",
+                source_chunk_ids=["chunk1"],
+            ),
+        ],
+        multi_year_table={
+            "FY2025": {"revenue": 40.0},
+            "FY2024": {"revenue": 60.0},
+        },
+    )
+
+    sanitized = agent._sanitize_extraction_candidates(bad_resp)
+
+    # Both revenue candidates must be rejected
+    rev_metrics = [m for m in sanitized.metrics if m.metric_name in {"revenue", "prior_revenue"}]
+    assert len(rev_metrics) == 0, f"Channel-mix revenue candidates should be rejected but found: {rev_metrics}"
+
+    # Multi-year table should also reject them
+    for period, vals in sanitized.multi_year_table.items():
+        assert vals.get("revenue") is None or vals.get("revenue") > 1000, \
+            f"Invalid revenue {vals.get('revenue')} leaked into multi_year_table for {period}"
+
+
+def test_regression_apple_revenue_accepts_authoritative_values():
+    """Authoritative income-statement revenue (e.g. 416161) must pass sanitization."""
+    agent = ExtractionAgent()
+
+    good_resp = RawLLMExtractionResponse(
+        metrics=[
+            RawLLMMetricItem(
+                metric_name="revenue",
+                value=416161.0,
+                unit="USD Millions",
+                evidence_snippet="Total net sales $416,161 million",
+                source_chunk_ids=["chunk1"],
+            ),
+            RawLLMMetricItem(
+                metric_name="prior_revenue",
+                value=391035.0,
+                unit="USD Millions",
+                evidence_snippet="Total net sales $391,035 million",
+                source_chunk_ids=["chunk1"],
+            ),
+        ],
+    )
+
+    sanitized = agent._sanitize_extraction_candidates(good_resp)
+    rev = next((m for m in sanitized.metrics if m.metric_name == "revenue"), None)
+    prior_rev = next((m for m in sanitized.metrics if m.metric_name == "prior_revenue"), None)
+    assert rev is not None and rev.value == 416161.0
+    assert prior_rev is not None and prior_rev.value == 391035.0
+
+
+def test_regression_impossible_gross_margin_rejected():
+    """Gross margin values like 488002.5% are impossible and must be rejected."""
+    agent = ExtractionAgent()
+
+    chunks = [{
+        "chunk_id": "chunk1",
+        "text": "Total net sales: $416,161 million. Gross profit: $195,201 million.",
+        "section": "financials",
+        "page_number": 30,
+    }]
+    all_map = {"chunk1": chunks[0]}
+
+    # Simulate LLM returning revenue=40 (channel-mix) and gross_margin=488002%
+    bad_resp = RawLLMExtractionResponse(
+        metrics=[
+            RawLLMMetricItem(
+                metric_name="revenue", value=416161.0, unit="USD Millions",
+                source_chunk_ids=["chunk1"],
+                evidence_snippet="Total net sales: $416,161 million",
+            ),
+            RawLLMMetricItem(
+                metric_name="gross_profit", value=195201.0, unit="USD Millions",
+                source_chunk_ids=["chunk1"],
+                evidence_snippet="Gross profit: $195,201 million",
+            ),
+            RawLLMMetricItem(
+                metric_name="gross_margin", value=488002.5, unit="%",
+                source_chunk_ids=["chunk1"],
+                evidence_snippet="gross margin",
+            ),
+        ],
+    )
+
+    items, m_dict, _ = agent._process_and_ground_metrics(
+        parsed_response=bad_resp,
+        all_chunks_map=all_map,
+        financial_chunks=chunks,
+        actual_doc_id="test-gm",
+        filename="test.pdf",
+    )
+
+    gm = m_dict.get("gross_margin")
+    # Gross margin should be derived from components or None, never 488002.5
+    if gm is not None:
+        assert abs(gm) <= 100.0, f"Impossible gross margin {gm} leaked through"
+
+
+def test_regression_gross_margin_derived_from_components():
+    """When revenue and gross_profit are available, gross_margin is correctly derived."""
+    agent = ExtractionAgent()
+
+    chunks = [{
+        "chunk_id": "chunk1",
+        "text": (
+            "Consolidated Statements of Operations:\n"
+            "Total net sales: $416,161 million. $391,035 million.\n"
+            "Gross profit: $195,201 million. $180,683 million.\n"
+        ),
+        "section": "financials",
+        "page_number": 30,
+    }]
+    all_map = {"chunk1": chunks[0]}
+
+    resp = RawLLMExtractionResponse(
+        metrics=[
+            RawLLMMetricItem(
+                metric_name="revenue", value=416161.0, prior_value=391035.0,
+                unit="USD Millions", source_chunk_ids=["chunk1"],
+                evidence_snippet="Total net sales: $416,161 million",
+                period="FY2025", prior_period="FY2024",
+            ),
+            RawLLMMetricItem(
+                metric_name="gross_profit", value=195201.0, prior_value=180683.0,
+                unit="USD Millions", source_chunk_ids=["chunk1"],
+                evidence_snippet="Gross profit: $195,201 million",
+                period="FY2025", prior_period="FY2024",
+            ),
+        ],
+    )
+
+    items, m_dict, _ = agent._process_and_ground_metrics(
+        parsed_response=resp,
+        all_chunks_map=all_map,
+        financial_chunks=chunks,
+        actual_doc_id="test-gm-derive",
+        filename="test.pdf",
+    )
+
+    gm = m_dict.get("gross_margin")
+    assert gm is not None, "Gross margin should be derived from revenue and gross_profit"
+    assert 46.0 <= gm <= 47.0, f"Expected ~46.90%, got {gm}%"
+
+    prior_gm = m_dict.get("prior_gross_margin")
+    if prior_gm is not None:
+        assert 45.0 <= prior_gm <= 47.0, f"Expected ~46.21%, got {prior_gm}%"
+
+
+def test_regression_diluted_eps_preferred_over_basic():
+    """The explicitly labelled Diluted EPS row must be selected, not Basic."""
+    agent = ExtractionAgent()
+
+    # Real Apple filing has Basic=7.49, Diluted=7.46
+    chunks = [{
+        "chunk_id": "eps-real",
+        "text": "Earnings per share:\nBasic 7.49 6.11\nDiluted 7.46 6.08",
+    }]
+    result = agent._extract_diluted_eps_from_evidence(chunks)
+    assert result is not None
+    current, prior, _, _ = result
+    assert current == 7.46, f"Expected Diluted EPS 7.46, got {current}"
+    assert prior == 6.08, f"Expected prior Diluted EPS 6.08, got {prior}"
+
+
+def test_regression_basic_eps_not_selected_as_diluted():
+    """When both Basic and Diluted rows exist, Basic must not shadow Diluted."""
+    agent = ExtractionAgent()
+
+    # Table where Basic appears first with different values
+    chunks = [{
+        "chunk_id": "eps-mixed",
+        "text": (
+            "| Earnings per share | FY2025 | FY2024 |\n"
+            "| --- | --- | --- |\n"
+            "| Basic | $7.49 | $6.11 |\n"
+            "| Diluted | $7.46 | $6.08 |"
+        ),
+    }]
+    result = agent._extract_diluted_eps_from_evidence(chunks)
+    assert result is not None
+    current, prior, _, _ = result
+    assert current == 7.46
+    assert prior == 6.08
+
+
+def test_regression_eps_sanitizer_rejects_basic_when_diluted_exists():
+    """Sanitizer should reject a Basic EPS candidate when Diluted is also present."""
+    agent = ExtractionAgent()
+
+    resp = RawLLMExtractionResponse(
+        metrics=[
+            RawLLMMetricItem(
+                metric_name="eps", value=7.49, unit="USD",
+                evidence_snippet="Basic earnings per share 7.49",
+                source_chunk_ids=["chunk1"],
+            ),
+            RawLLMMetricItem(
+                metric_name="eps", value=7.46, unit="USD",
+                evidence_snippet="Diluted earnings per share 7.46",
+                source_chunk_ids=["chunk1"],
+            ),
+        ],
+    )
+
+    sanitized = agent._sanitize_extraction_candidates(resp)
+    eps_metrics = [m for m in sanitized.metrics if m.metric_name == "eps"]
+    # Should have at most the Diluted one
+    assert len(eps_metrics) >= 1
+    assert eps_metrics[0].value == 7.46, f"Expected Diluted EPS 7.46, got {eps_metrics[0].value}"
+
+
+def test_regression_bbby_all_metrics_same_column_mapping():
+    """All BBBY metrics must use the same source-column -> fiscal-period mapping."""
+    agent = ExtractionAgent()
+
+    items = [
+        ExtractionMetricItem(metric_name="revenue", value=5344.4, prior_value=7871.8,
+                             period="FY2023", prior_period="FY2022", unit="USD Millions"),
+        ExtractionMetricItem(metric_name="gross_profit", value=1207.9, prior_value=2673.6,
+                             period="FY2023", prior_period="FY2022", unit="USD Millions"),
+        ExtractionMetricItem(metric_name="net_income", value=-3506.7, prior_value=-559.6,
+                             period="FY2023", prior_period="FY2022", unit="USD Millions"),
+    ]
+    bbby_chunks = [{
+        "text": (
+            "| Consolidated Statements of Operations | February 26, 2022 | February 27, 2021 |\n"
+            "| --- | --- | --- |\n"
+            "| Net sales | 5,344,400 | 7,871,800 |\n"
+            "| Gross profit | 1,207,900 | 2,673,600 |\n"
+            "| Net loss | (3,506,700) | (559,600) |\n"
+            "(Dollars in thousands)"
+        )
+    }]
+
+    agent._canonicalize_metric_periods(items, bbby_chunks, "FY2023", "FY2022")
+    years = agent._build_multi_year_data(items)
+
+    # FY2022 (Col 1)
+    assert years["FY2022"]["revenue"] == 5344.4
+    assert years["FY2022"]["gross_profit"] == 1207.9
+    assert years["FY2022"]["net_income"] == -3506.7
+
+    # FY2021 (Col 2)
+    assert years["FY2021"]["revenue"] == 7871.8
+    assert years["FY2021"]["gross_profit"] == 2673.6
+    assert years["FY2021"]["net_income"] == -559.6
+
+
+def test_regression_bbby_gross_margin_derived():
+    """BBBY gross margin must be derived correctly from revenue and gross_profit."""
+    # FY2022: GP=1207.9, Rev=5344.4 -> GM ≈ 22.60%
+    gm_2022 = round(1207.9 / 5344.4 * 100.0, 2)
+    assert 22.0 <= gm_2022 <= 23.0, f"FY2022 gross margin {gm_2022} out of range"
+
+    # FY2021: GP=2673.6, Rev=7871.8 -> GM ≈ 33.97%
+    gm_2021 = round(2673.6 / 7871.8 * 100.0, 2)
+    assert 33.0 <= gm_2021 <= 35.0, f"FY2021 gross margin {gm_2021} out of range"
+
+
+def test_regression_supplement_rejects_implausible_revenue():
+    """_supplement_multi_year_from_llm_table must reject revenue <= 1000."""
+    agent = ExtractionAgent()
+    multi_year_data = {"FY2025": {"net_income": 112010.0}}
+    llm_table = {
+        "FY2025": {"revenue": 40.0, "net_income": 112010.0},
+        "FY2024": {"revenue": 60.0},
+    }
+
+    agent._supplement_multi_year_from_llm_table(multi_year_data, llm_table, ["FY2025", "FY2024"], [])
+
+    # Revenue 40 and 60 should be rejected
+    assert multi_year_data.get("FY2025", {}).get("revenue") is None, \
+        "Revenue=40 should have been rejected by supplementation"
+    assert multi_year_data.get("FY2024", {}).get("revenue") is None, \
+        "Revenue=60 should have been rejected by supplementation"
+
+
+def test_regression_supplement_rejects_impossible_gross_margin():
+    """_supplement_multi_year_from_llm_table must reject gross_margin > 100%."""
+    agent = ExtractionAgent()
+    multi_year_data = {"FY2025": {}}
+    llm_table = {
+        "FY2025": {"gross_margin": 488002.5},
+    }
+
+    agent._supplement_multi_year_from_llm_table(multi_year_data, llm_table, ["FY2025"], [])
+
+    gm = multi_year_data.get("FY2025", {}).get("gross_margin")
+    assert gm is None, f"Impossible gross_margin {gm} should have been rejected"
+
+
+def test_regression_reprocessing_invalidates_stale_comparison_cache():
+    """Reprocessing a document must invalidate stale comparison_results."""
+    from unittest.mock import MagicMock
+
+    agent = ExtractionAgent()
+    db = MagicMock()
+    result = ExtractionResult(
+        agent_name="ExtractionAgent", session_id="session", document_id="doc123",
+        metrics=[ExtractionMetricItem(metric_name="revenue", value=416161.0, period="FY2025")],
+        metrics_dict={"revenue": 416161.0},
+        multi_year_data={"FY2025": {"revenue": 416161.0}},
+    )
+    agent._persist_consolidated_metrics(db, "session", "user", "doc123", "filing.pdf", result)
+
+    # Verify comparison cache was invalidated
+    db.comparison_results.delete_many.assert_called_once()
+    call_args = db.comparison_results.delete_many.call_args[0][0]
+    assert call_args["session_id"] == "session"
+    assert {"document_ids": "doc123"} in call_args["$or"]

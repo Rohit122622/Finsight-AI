@@ -9,6 +9,7 @@ and multi-tenant session-scoped retrieval across extracted document chunks.
 import hashlib
 import logging
 import math
+import os
 import re
 import threading
 import time
@@ -43,6 +44,10 @@ class EmbeddingService:
         self._model = None
         self._model_load_attempted = False
         self._is_neural_ready = False
+        self.device = "uninitialized"
+        self.model_load_ms = 0.0
+        self.model_load_count = 0
+        self.model_reused = False
 
     def _get_db(self) -> AsyncIOMotorDatabase:
         return mongodb.get_db()
@@ -54,34 +59,60 @@ class EmbeddingService:
         global _SHARED_MODELS
 
         with _MODEL_LOCK:
-            if self.model_name in _SHARED_MODELS:
+            if self.model_name in _SHARED_MODELS and _SHARED_MODELS[self.model_name] is not None:
                 self._model = _SHARED_MODELS[self.model_name]
-                self._is_neural_ready = self._model is not None
+                self.device = str(self._model.device)
+                self._is_neural_ready = True
                 self._model_load_attempted = True
+                self.model_reused = True
+                logger.info(
+                    "MODEL_CACHE_HIT: Reused cached neural embedding model '%s' in process %d",
+                    self.model_name,
+                    os.getpid(),
+                )
                 return
 
-            if self._model_load_attempted:
+            if self._model_load_attempted and self.model_name in _SHARED_MODELS:
                 return
 
             self._model_load_attempted = True
+            logger.info(
+                "MODEL_CACHE_MISS: Initializing neural embedding model '%s' in process %d...",
+                self.model_name,
+                os.getpid(),
+            )
             t0 = time.time()
             try:
-                from sentence_transformers import SentenceTransformer
                 import torch
+                from sentence_transformers import SentenceTransformer
 
-                device = "cuda" if torch.cuda.is_available() else "cpu"
-                logger.info("Loading neural embedding model '%s' on %s...", self.model_name, device)
+                # Auto-select GPU/CUDA when genuine CUDA device is available, safe CPU fallback otherwise
+                if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+                    device = "cuda"
+                    device_desc = f"cuda (GPU: {torch.cuda.get_device_name(0)})"
+                    cpu_threads = os.cpu_count() or 4
+                else:
+                    device = "cpu"
+                    device_desc = "cpu"
+                    cpu_threads = min(10, os.cpu_count() or 4)
+                    torch.set_num_threads(cpu_threads)
+
                 model = SentenceTransformer(self.model_name, device=device)
                 _SHARED_MODELS[self.model_name] = model
                 self._model = model
+                self.device = str(model.device)
                 self._is_neural_ready = True
                 load_duration = (time.time() - t0) * 1000
+                self.model_load_ms = load_duration
+                self.model_load_count += 1
                 logger.info(
-                    "Neural embedding model '%s' successfully loaded in %.1fms (dimension=%d, device=%s)",
+                    "Neural embedding model '%s' successfully loaded in %.1fms (model_load_ms=%.1f, dimension=%d, device=%s, threads=%d)",
                     self.model_name,
                     load_duration,
+                    load_duration,
                     self.dimension,
-                    device,
+                    device_desc,
+                    cpu_threads,
                 )
             except Exception as exc:
                 logger.warning(
@@ -92,6 +123,17 @@ class EmbeddingService:
                 _SHARED_MODELS[self.model_name] = None
                 self._model = None
                 self._is_neural_ready = False
+
+    def preload_model(self) -> None:
+        """Explicitly preload and warm up neural model during application startup."""
+        self._load_model()
+        if self._is_neural_ready and self._model is not None:
+            try:
+                import torch
+                with torch.inference_mode():
+                    _ = self._model.encode(["FinSentry warm-up"], batch_size=1, normalize_embeddings=True)
+            except Exception:
+                pass
 
     @property
     def is_neural_active(self) -> bool:
@@ -112,7 +154,13 @@ class EmbeddingService:
 
         if self._is_neural_ready and self._model is not None:
             try:
-                embedding = self._model.encode(text.strip(), normalize_embeddings=True)
+                import torch
+                with torch.inference_mode():
+                    embedding = self._model.encode(
+                        text.strip(),
+                        normalize_embeddings=True,
+                        show_progress_bar=False,
+                    )
                 if hasattr(embedding, "tolist"):
                     embedding = embedding.tolist()
                 if self.validate_vector(embedding):
@@ -122,9 +170,10 @@ class EmbeddingService:
 
         return self._deterministic_feature_embedding(text)
 
-    def generate_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
+    def generate_embeddings_batch(self, texts: List[str], batch_size: Optional[int] = None) -> List[List[float]]:
         """
-        Generate normalized 1024-dimensional dense vector embeddings for a batch of text chunks.
+        Generate normalized 1024-dimensional dense vector embeddings for a batch of text chunks
+        with granular stage timings and telemetry (preprocessing, inference, postprocessing, validation).
         """
         if not texts:
             return []
@@ -132,15 +181,32 @@ class EmbeddingService:
         self._load_model()
 
         if self._is_neural_ready and self._model is not None:
-            t0 = time.time()
+            t_total_start = time.time()
             try:
+                import torch
+
+                threads = torch.get_num_threads()
+                if batch_size is None:
+                    batch_size = 64 if str(getattr(self._model, "device", "")).startswith("cuda") else 32
+
+                # 1. Preprocessing / Cleaning
+                t_prep_start = time.time()
                 clean_texts = [t.strip() if (t and t.strip()) else "empty" for t in texts]
-                embeddings = self._model.encode(
-                    clean_texts,
-                    normalize_embeddings=True,
-                    batch_size=32,
-                    show_progress_bar=False,
-                )
+                preprocessing_ms = (time.time() - t_prep_start) * 1000
+
+                # 2. Model Inference
+                t_infer_start = time.time()
+                with torch.inference_mode():
+                    embeddings = self._model.encode(
+                        clean_texts,
+                        normalize_embeddings=True,
+                        batch_size=batch_size,
+                        show_progress_bar=False,
+                    )
+                inference_ms = (time.time() - t_infer_start) * 1000
+
+                # 3. Post-Processing & Validation
+                t_post_start = time.time()
                 result: List[List[float]] = []
                 for emb in embeddings:
                     vec = emb.tolist() if hasattr(emb, "tolist") else list(emb)
@@ -148,18 +214,63 @@ class EmbeddingService:
                         result.append(vec)
                     else:
                         result.append(self._deterministic_feature_embedding("empty"))
-                duration_ms = (time.time() - t0) * 1000
+                postprocessing_ms = (time.time() - t_post_start) * 1000
+
+                total_duration_ms = (time.time() - t_total_start) * 1000
+                ms_per_chunk = total_duration_ms / max(len(texts), 1)
+                chunks_per_sec = (len(texts) / (total_duration_ms / 1000.0)) if total_duration_ms > 0 else 0.0
+
+                curr_device = getattr(self, "device", None) or (str(self._model.device) if self._model else "unknown")
                 logger.info(
-                    "Generated embeddings for %d chunks in %.1fms (%.1fms/chunk)",
+                    "EMBEDDING_PERF: device=%s, model=%s, chunks=%d, batch_size=%d, torch_threads=%d, latency_ms=%.1f, ms_per_chunk=%.2f, throughput=%.2f chunks/sec, inference_ms=%.1f",
+                    curr_device,
+                    self.model_name,
                     len(texts),
-                    duration_ms,
-                    duration_ms / max(len(texts), 1),
+                    batch_size,
+                    threads,
+                    total_duration_ms,
+                    ms_per_chunk,
+                    chunks_per_sec,
+                    inference_ms,
                 )
                 return result
             except Exception as exc:
                 logger.warning("Neural batch encoding error, using fallback projection: %s", exc)
 
         return [self.generate_embedding(t) for t in texts]
+
+    def benchmark_batch_encoding(
+        self,
+        sample_texts: Optional[List[str]] = None,
+        batch_sizes: Optional[List[int]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Benchmark neural encoding throughput across multiple batch sizes on current hardware.
+        """
+        if batch_sizes is None:
+            batch_sizes = [16, 32]
+        if sample_texts is None:
+            sample_texts = [
+                f"Financial disclosure statement paragraph {i} analyzing consolidated operating results and capital expenditures."
+                for i in range(64)
+            ]
+
+        results = {}
+        for bs in batch_sizes:
+            t0 = time.time()
+            vecs = self.generate_embeddings_batch(sample_texts, batch_size=bs)
+            dur_ms = (time.time() - t0) * 1000
+            ms_per = dur_ms / len(sample_texts)
+            rate = len(sample_texts) / (dur_ms / 1000.0) if dur_ms > 0 else 0.0
+            results[f"batch_{bs}"] = {
+                "chunks": len(sample_texts),
+                "batch_size": bs,
+                "total_ms": round(dur_ms, 1),
+                "ms_per_chunk": round(ms_per, 2),
+                "chunks_per_sec": round(rate, 2),
+                "vectors_count": len(vecs),
+            }
+        return results
 
     def _deterministic_feature_embedding(self, text: str) -> List[float]:
         """

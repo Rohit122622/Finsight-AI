@@ -1,0 +1,139 @@
+# ──────────────────────────────────────────────────────────────
+# FinSentry AI — Render Blueprint (Infrastructure as Code)
+# ──────────────────────────────────────────────────────────────
+# Provisions the production backend topology:
+#   finsentry-backend  → FastAPI web service   (docker/backend.Dockerfile)
+#   finsentry-worker   → Celery worker service (docker/celery.Dockerfile)  [SEPARATE from web]
+#   finsentry-redis    → Managed Redis (broker + result backend + cache)
+#
+# Frontend is deployed separately on Vercel (see frontend/vercel.json).
+# MongoDB Atlas and Cloudflare R2 are external managed services — their
+# credentials are provided as dashboard secrets (sync:false), NEVER committed.
+#
+# NOTE: This blueprint is prepared configuration. Applying it requires a Render
+# account and setting the sync:false secret values in the Render dashboard.
+# ──────────────────────────────────────────────────────────────
+
+services:
+  # ── FastAPI Web Service ─────────────────────────────────────
+  - type: web
+    name: finsentry-backend
+    runtime: docker
+    dockerfilePath: ./docker/backend.Dockerfile
+    dockerContext: .
+    plan: starter
+    region: oregon
+    healthCheckPath: /api/v1/health
+    autoDeploy: true
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DEBUG
+        value: "false"
+      - key: DATABASE_NAME
+        value: finsentry
+      # Redis broker/backend wired from the managed Redis instance below
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: finsentry-redis
+          property: connectionString
+      - key: CELERY_BROKER_URL
+        fromService:
+          type: redis
+          name: finsentry-redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          type: redis
+          name: finsentry-redis
+          property: connectionString
+      # ---- Secrets: set in Render dashboard, never committed ----
+      - key: MONGODB_URI
+        sync: false
+      - key: JWT_SECRET_KEY
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REDIRECT_URI
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: OLLAMA_API_KEY
+        sync: false
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET_NAME
+        sync: false
+      - key: R2_ENDPOINT_URL
+        sync: false
+      # FRONTEND_URL/CORS: set to the deployed Vercel origin
+      - key: FRONTEND_URL
+        sync: false
+
+  # ── Celery Worker Service (SEPARATE from the web service) ────
+  - type: worker
+    name: finsentry-worker
+    runtime: docker
+    dockerfilePath: ./docker/celery.Dockerfile
+    dockerContext: .
+    plan: starter
+    region: oregon
+    autoDeploy: true
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DATABASE_NAME
+        value: finsentry
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: finsentry-redis
+          property: connectionString
+      - key: CELERY_BROKER_URL
+        fromService:
+          type: redis
+          name: finsentry-redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          type: redis
+          name: finsentry-redis
+          property: connectionString
+      - key: MONGODB_URI
+        sync: false
+      - key: JWT_SECRET_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: OLLAMA_API_KEY
+        sync: false
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET_NAME
+        sync: false
+      - key: R2_ENDPOINT_URL
+        sync: false
+
+  # ── Managed Redis (broker + result backend + cache) ─────────
+  # If your Render account exposes this as "Key Value", change type to `keyvalue`.
+  - type: redis
+    name: finsentry-redis
+    plan: starter
+    region: oregon
+    maxmemoryPolicy: allkeys-lru
+    ipAllowList: []   # empty = only reachable from Render services (no public access)

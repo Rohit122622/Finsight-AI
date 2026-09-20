@@ -569,11 +569,20 @@ class RetrievalService:
             filter_dict = request.filters.model_dump(exclude_none=True)
             filter_str = json.dumps(filter_dict, sort_keys=True)
 
-                                                                                
+        doc_ids_str = ""
+        if request.filters and getattr(request.filters, "document_ids", None):
+            doc_ids_str = ",".join(sorted(request.filters.document_ids))
+        elif request.filters and getattr(request.filters, "document_id", None):
+            doc_ids_str = str(request.filters.document_id)
+        elif hasattr(request, "document_ids") and getattr(request, "document_ids", None):
+            doc_ids_str = ",".join(sorted(getattr(request, "document_ids")))
+        norm_query = request.query.strip().lower()
+
         session_version = self._get_session_version(session_id)
 
         key_material = (
-            f"{user_id}|{session_id}|{request.query}|"
+            f"{user_id}|{session_id}|{norm_query}|"
+            f"docs:{doc_ids_str}|"
             f"{request.top_k}|{request.mode.value}|"
             f"{request.score_threshold}|{request.vector_weight}|"
             f"{filter_str}|v{self._cache_version}|sv{session_version}"

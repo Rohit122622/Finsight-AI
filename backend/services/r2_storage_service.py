@@ -7,6 +7,8 @@ for isolated testing without external network dependencies.
 
 import io
 import logging
+import os
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from core.config import get_settings
@@ -23,6 +25,14 @@ class R2StorageService:
     def __init__(self) -> None:
         self._mock_storage: Dict[str, bytes] = {}
         self._mock_failure: bool = False
+
+    def _get_disk_path(self, key: str) -> Path:
+        """Resolve persistent filesystem storage path for cross-process access in development/testing."""
+        settings = get_settings()
+        base_dir = Path(getattr(settings, "STORAGE_LOCAL_DIR", Path(__file__).resolve().parent.parent / ".storage"))
+        clean_rel = key.replace("/", os.sep).lstrip(os.sep)
+        target_path = base_dir / clean_rel
+        return target_path
 
     def set_mock_failure(self, failure: bool) -> None:
         """Testing hook to simulate R2 storage outage/exception."""
@@ -61,7 +71,6 @@ class R2StorageService:
 
         settings = get_settings()
 
-                                                                     
         if settings.R2_ACCESS_KEY_ID and settings.R2_SECRET_ACCESS_KEY and settings.R2_ENDPOINT_URL:
             try:
                 import boto3
@@ -87,9 +96,16 @@ class R2StorageService:
                 logger.error("Boto3 R2 upload error: %s", exc)
                 raise StorageServiceException(f"Cloudflare R2 upload error: {exc}")
 
-                                                         
+        # Shared persistent disk fallback for cross-process development/test environments
+        try:
+            disk_path = self._get_disk_path(key)
+            disk_path.parent.mkdir(parents=True, exist_ok=True)
+            disk_path.write_bytes(data)
+        except Exception as exc:
+            logger.warning("Failed to write mock storage to disk %s: %s", key, exc)
+
         self._mock_storage[key] = data
-        logger.info("Stored %d bytes to in-memory private R2 store: key=%s", len(data), key)
+        logger.info("Stored %d bytes to persistent private store: key=%s", len(data), key)
         return key
 
     def get_bytes(self, key: str) -> bytes:
@@ -118,9 +134,20 @@ class R2StorageService:
             except Exception as exc:
                 raise StorageServiceException(f"Failed to get object from R2: {exc}")
 
-        if key not in self._mock_storage:
-            raise StorageServiceException(f"Object key '{key}' not found in R2 storage.")
-        return self._mock_storage[key]
+        if key in self._mock_storage:
+            return self._mock_storage[key]
+
+        # Check shared persistent disk fallback
+        disk_path = self._get_disk_path(key)
+        if disk_path.exists() and disk_path.is_file():
+            try:
+                data = disk_path.read_bytes()
+                self._mock_storage[key] = data
+                return data
+            except Exception as exc:
+                raise StorageServiceException(f"Failed to read object from disk '{disk_path}': {exc}")
+
+        raise StorageServiceException(f"Object key '{key}' not found in R2 storage.")
 
     def delete_object(self, key: str) -> bool:
         """
@@ -141,6 +168,14 @@ class R2StorageService:
             except Exception as exc:
                 logger.warning("Failed to delete object from R2: %s", exc)
                 return False
+
+        # Remove from disk if present
+        try:
+            disk_path = self._get_disk_path(key)
+            if disk_path.exists():
+                disk_path.unlink()
+        except Exception as exc:
+            logger.warning("Failed to delete disk storage file %s: %s", key, exc)
 
         if key in self._mock_storage:
             del self._mock_storage[key]
@@ -166,7 +201,11 @@ class R2StorageService:
             except Exception:
                 return False
 
-        return key in self._mock_storage
+        if key in self._mock_storage:
+            return True
+
+        disk_path = self._get_disk_path(key)
+        return disk_path.exists() and disk_path.is_file()
 
     def get_object_metadata(self, key: str) -> Dict[str, Any]:
         """
@@ -195,10 +234,21 @@ class R2StorageService:
             except Exception as exc:
                 raise StorageServiceException(f"Failed to fetch R2 object metadata: {exc}")
 
-        if key not in self._mock_storage:
+        data = None
+        if key in self._mock_storage:
+            data = self._mock_storage[key]
+        else:
+            disk_path = self._get_disk_path(key)
+            if disk_path.exists() and disk_path.is_file():
+                try:
+                    data = disk_path.read_bytes()
+                    self._mock_storage[key] = data
+                except Exception as exc:
+                    raise StorageServiceException(f"Failed to read object metadata from disk '{disk_path}': {exc}")
+
+        if data is None:
             raise StorageServiceException(f"Object key '{key}' not found in R2 storage.")
 
-        data = self._mock_storage[key]
         return {
             "content_length": len(data),
             "content_type": "application/pdf" if key.endswith(".pdf") else "application/octet-stream",
@@ -237,8 +287,7 @@ class R2StorageService:
                 logger.error("Failed to generate presigned URL from boto3: %s", exc)
                 raise StorageServiceException(f"Cloudflare R2 presigned URL generation error: {exc}")
 
-                        
-        if key not in self._mock_storage:
+        if not self.object_exists(key):
             raise StorageServiceException(f"Object key '{key}' not found in R2 storage.")
         return f"https://mock-r2.finsentry.internal/{key}?expires_in={expires_in_seconds}"
 

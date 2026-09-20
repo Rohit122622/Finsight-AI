@@ -432,7 +432,8 @@ class RAGEvaluationRunner:
 
                                             
         try:
-            await observability_service.save_trace(trace_ctx)
+            finalized_trace = trace_ctx.finalize(status=trace_ctx.status, final_response=research_response)
+            await observability_service.save_trace(finalized_trace)
         except Exception:
             pass
 

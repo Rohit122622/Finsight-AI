@@ -45,6 +45,13 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# ── Local persisted storage (reports/comparisons/users) ────────
+.storage/
+backend/.storage/
+
+# ── KPI availability probe history (local observations) ────────
+kpi_probe_history.jsonl
+
 # ── IDE & Operating System ─────────────────────────────────────
 .vscode/
 .idea/
@@ -55,3 +62,7 @@ Thumbs.db
 *.njsproj
 *.sln
 *.sw?
+
+# Playwright generated artifacts
+frontend/playwright-report/
+frontend/test-results/

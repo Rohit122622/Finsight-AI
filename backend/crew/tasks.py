@@ -66,14 +66,39 @@ def create_red_flag_task(session_id: str, risk_focus: Optional[str] = None) -> F
     )
 
 
-def create_comparison_task(session_id: str, baseline: str, comparison: str) -> FinSentryTask:
+def create_comparison_task(
+    session_id: str,
+    document_ids: Optional[List[str]] = None,
+    baseline: Optional[str] = None,
+    comparison: Optional[str] = None,
+) -> FinSentryTask:
+    """
+    Create a multi-company comparison task.
+
+    Preferred: pass document_ids (list of 2+ document IDs) for multi-company comparison.
+    Legacy: pass baseline/comparison strings for backward compatibility.
+    """
+    ctx: Dict[str, Any] = {"session_id": session_id}
+    if document_ids:
+        ctx["document_ids"] = document_ids
+        desc = (
+            f"Compare financial metrics across {len(document_ids)} companies "
+            f"in session '{session_id}' using extracted_metrics."
+        )
+    else:
+        ctx["baseline_entity"] = baseline or "Current Period"
+        ctx["comparison_entity"] = comparison or "Prior Period"
+        desc = (
+            f"Compare financial performance of '{baseline}' vs '{comparison}' "
+            f"in session '{session_id}'."
+        )
     return FinSentryTask(
-        description=f"Compare financial performance and operational metrics of '{baseline}' vs '{comparison}' in session '{session_id}'.",
-        expected_output="ComparisonResult containing metric variances, trends, and executive summary.",
+        description=desc,
+        expected_output="ComparisonOutput containing chart-ready multi-company metric comparison with peer statistics.",
         agent_name="ComparisonAgent",
         output_schema=ComparisonResult,
         tools=["document_search_tool", "metric_extraction_tool"],
-        context={"session_id": session_id, "baseline_entity": baseline, "comparison_entity": comparison},
+        context=ctx,
     )
 
 

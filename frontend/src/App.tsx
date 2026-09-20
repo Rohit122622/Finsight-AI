@@ -45,6 +45,7 @@ export default function App() {
               <Route path="/sessions/:sessionId" element={<SessionDetail />} />
               <Route path="/sessions/:sessionId/research" element={<Research />} />
               <Route path="/sessions/:sessionId/documents" element={<SessionDetail />} />
+              <Route path="/sessions/:sessionId/extraction" element={<SessionDetail />} />
               <Route path="/sessions/:sessionId/reports" element={<SessionDetail />} />
               <Route path="/research" element={<Research />} />
               <Route path="/documents" element={<DocumentsPage />} />

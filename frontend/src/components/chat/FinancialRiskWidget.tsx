@@ -11,27 +11,41 @@
 
 
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import type { ResearchResponse } from "../../types/research";
 import { extractRiskInfo } from "../../services/research";
 import { getSessionRedFlagsApi, type SessionRedFlagsResponse } from "../../api/analysis";
 
 interface FinancialRiskWidgetProps {
   sessionId?: string;
+  documentId?: string;
   response?: ResearchResponse | null;
 }
 
-export function FinancialRiskWidget({ sessionId, response }: FinancialRiskWidgetProps) {
+export function FinancialRiskWidget({ sessionId, documentId, response }: FinancialRiskWidgetProps) {
   const [sessionRedFlags, setSessionRedFlags] = useState<SessionRedFlagsResponse | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  // Track the document identity that was used for the current state to prevent stale display
+  const activeDocRef = useRef<string | undefined>(documentId);
+
+  // Reset stale state when the active document changes
+  useEffect(() => {
+    if (activeDocRef.current !== documentId) {
+      activeDocRef.current = documentId;
+      setSessionRedFlags(null);
+      setFetchError(null);
+    }
+  }, [documentId]);
 
   const loadRedFlags = useCallback(async () => {
     if (!sessionId) return;
     try {
       setIsLoading(true);
       setFetchError(null);
-      const rawData: any = await getSessionRedFlagsApi(sessionId);
+      const rawData: any = await getSessionRedFlagsApi(sessionId, documentId);
+      // Guard: only apply the response if the document hasn't changed while we were fetching
+      if (activeDocRef.current !== documentId) return;
       if (Array.isArray(rawData)) {
         setSessionRedFlags({
           session_id: sessionId,
@@ -45,11 +59,13 @@ export function FinancialRiskWidget({ sessionId, response }: FinancialRiskWidget
         setSessionRedFlags(rawData);
       }
     } catch {
-      setFetchError("Unable to load session risk data");
+      if (activeDocRef.current === documentId) {
+        setFetchError("Unable to load session risk data");
+      }
     } finally {
       setIsLoading(false);
     }
-  }, [sessionId]);
+  }, [sessionId, documentId]);
 
   useEffect(() => {
     loadRedFlags();
@@ -332,7 +348,7 @@ export function FinancialRiskWidget({ sessionId, response }: FinancialRiskWidget
 
         <div style={{ textAlign: "right" }}>
           <span style={{ fontSize: "0.6875rem", color: "var(--color-text-secondary)", display: "block" }}>
-            Risk Score
+            {documentId ? "Company Risk Score" : "Session Composite Risk Score"}
           </span>
           <span
             className="font-tabular"

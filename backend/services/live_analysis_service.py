@@ -314,15 +314,17 @@ class LiveAnalysisService:
         return True
 
     async def get_session_red_flags(
-        self, user_id: str, session_id: str
+        self, user_id: str, session_id: str, document_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Retrieve structured RedFlagResult and lifecycle status for a session.
+        When document_id is provided, returns ONLY that document's red flag record.
+        When absent and multiple documents exist, returns a per-document breakdown.
         Status: NOT_RUN | RUNNING | COMPLETED_WITH_FLAGS | COMPLETED_NO_FLAGS | FAILED
         """
         db = self._get_db()
 
-                                                                     
+        # --- Check for running jobs ---
         running_job = await db.jobs.find_one({
             "session_id": session_id,
             "user_id": user_id,
@@ -332,6 +334,7 @@ class LiveAnalysisService:
         if running_job:
             return {
                 "session_id": session_id,
+                "document_id": document_id,
                 "status": "RUNNING",
                 "total_flags": 0,
                 "high_severity_count": 0,
@@ -340,28 +343,62 @@ class LiveAnalysisService:
                 "flags": [],
             }
 
-                                                                      
-        rf_doc = await db.red_flags.find_one({"session_id": session_id})
-        if rf_doc:
-            flags = rf_doc.get("flags", [])
-            total_flags = len(flags)
-            high_count = sum(
-                1 for f in flags if str(f.get("severity", "")).upper() in ["HIGH", "CRITICAL"]
-            )
-            risk_score = rf_doc.get("risk_score", 0.0)
-            overall_assessment = rf_doc.get("overall_assessment", "")
-            status_str = "COMPLETED_WITH_FLAGS" if total_flags > 0 else "COMPLETED_NO_FLAGS"
-            return {
-                "session_id": session_id,
-                "status": status_str,
-                "total_flags": total_flags,
-                "high_severity_count": high_count,
-                "risk_score": risk_score,
-                "overall_assessment": overall_assessment,
-                "flags": flags,
-            }
+        # --- Build document-scoped query ---
+        rf_query: Dict[str, Any] = {"session_id": session_id}
+        if document_id:
+            rf_query["document_id"] = document_id
 
-                                                 
+        # --- Attempt document-specific lookup first ---
+        if document_id:
+            rf_doc = await db.red_flags.find_one(rf_query)
+            if rf_doc:
+                return self._format_red_flag_response(rf_doc, session_id, document_id)
+        else:
+            # No document_id specified — check how many red_flags records exist
+            rf_cursor = db.red_flags.find(rf_query)
+            rf_docs = await rf_cursor.to_list(length=100)
+
+            if len(rf_docs) == 1:
+                # Single document in session — return it directly
+                return self._format_red_flag_response(rf_docs[0], session_id)
+            elif len(rf_docs) > 1:
+                # Multiple documents — return per-document breakdown
+                documents_breakdown = []
+                all_flags = []
+                total_risk = 0.0
+                for rd in rf_docs:
+                    doc_flags = rd.get("flags", [])
+                    doc_risk = rd.get("risk_score", 0.0)
+                    all_flags.extend(doc_flags)
+                    total_risk = max(total_risk, doc_risk)
+                    documents_breakdown.append({
+                        "document_id": rd.get("document_id"),
+                        "company_name": rd.get("company_name"),
+                        "total_flags": len(doc_flags),
+                        "high_severity_count": sum(
+                            1 for f in doc_flags if str(f.get("severity", "")).upper() in ["HIGH", "CRITICAL"]
+                        ),
+                        "risk_score": doc_risk,
+                        "overall_assessment": rd.get("overall_assessment", ""),
+                        "flags": doc_flags,
+                    })
+                total_flags = len(all_flags)
+                high_count = sum(
+                    1 for f in all_flags if str(f.get("severity", "")).upper() in ["HIGH", "CRITICAL"]
+                )
+                status_str = "COMPLETED_WITH_FLAGS" if total_flags > 0 else "COMPLETED_NO_FLAGS"
+                return {
+                    "session_id": session_id,
+                    "status": status_str,
+                    "total_flags": total_flags,
+                    "high_severity_count": high_count,
+                    "risk_score": total_risk,
+                    "overall_assessment": f"Multi-document session with {len(rf_docs)} analyzed documents.",
+                    "flags": all_flags,
+                    "documents": documents_breakdown,
+                }
+
+        # --- Fallback to analysis reports ---
         reports, _ = await self.list_reports(user_id=user_id, session_id=session_id, limit=5)
         if reports:
             report_flags: List[Dict[str, Any]] = []
@@ -371,6 +408,7 @@ class LiveAnalysisService:
             status_str = "COMPLETED_WITH_FLAGS" if total_flags > 0 else "COMPLETED_NO_FLAGS"
             return {
                 "session_id": session_id,
+                "document_id": document_id,
                 "status": status_str,
                 "total_flags": total_flags,
                 "high_severity_count": sum(
@@ -381,7 +419,7 @@ class LiveAnalysisService:
                 "flags": report_flags,
             }
 
-                                                
+        # --- Check for failed jobs ---
         failed_job = await db.jobs.find_one({
             "session_id": session_id,
             "user_id": user_id,
@@ -395,6 +433,7 @@ class LiveAnalysisService:
             err_msg = (failed_job.get("error") if failed_job else None) or "Document processing or forensic analysis failed."
             return {
                 "session_id": session_id,
+                "document_id": document_id,
                 "status": "FAILED",
                 "total_flags": 0,
                 "high_severity_count": 0,
@@ -403,15 +442,43 @@ class LiveAnalysisService:
                 "flags": [],
             }
 
-                                   
+        # --- NOT_RUN ---
         return {
             "session_id": session_id,
+            "document_id": document_id,
             "status": "NOT_RUN",
             "total_flags": 0,
             "high_severity_count": 0,
             "risk_score": 0.0,
             "overall_assessment": "Risk assessment not yet run.",
             "flags": [],
+        }
+
+    @staticmethod
+    def _format_red_flag_response(
+        rf_doc: Dict[str, Any],
+        session_id: str,
+        document_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Format a single red_flags MongoDB document into the API response shape."""
+        flags = rf_doc.get("flags", [])
+        total_flags = len(flags)
+        high_count = sum(
+            1 for f in flags if str(f.get("severity", "")).upper() in ["HIGH", "CRITICAL"]
+        )
+        risk_score = rf_doc.get("risk_score", 0.0)
+        overall_assessment = rf_doc.get("overall_assessment", "")
+        status_str = "COMPLETED_WITH_FLAGS" if total_flags > 0 else "COMPLETED_NO_FLAGS"
+        return {
+            "session_id": session_id,
+            "document_id": document_id or rf_doc.get("document_id"),
+            "company_name": rf_doc.get("company_name"),
+            "status": status_str,
+            "total_flags": total_flags,
+            "high_severity_count": high_count,
+            "risk_score": risk_score,
+            "overall_assessment": overall_assessment,
+            "flags": flags,
         }
 
 

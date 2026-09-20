@@ -37,6 +37,7 @@ COMMON_FINANCIAL_STOPWORDS: Set[str] = {
     "the", "a", "an", "this", "that", "these", "those", "my", "our", "your", "their", "its",
     "them", "they", "we", "us", "you", "i", "me", "him", "her", "both", "all", "either", "neither",
     "in", "on", "at", "for", "from", "to", "by", "with", "about", "against", "between", "into", "through", "during", "before", "after", "above", "below", "under",
+    "and", "or", "but", "nor", "as", "if", "then", "than", "also", "too", "very", "other", "another",
     "much", "many", "far", "long", "often", "such", "so", "some", "any", "no", "not", "only", "same",
     "revenue", "sales", "net", "gross", "income", "profit", "loss", "margin", "ebitda", "ebit", "opex", "capex",
     "debt", "equity", "cash", "flow", "assets", "liabilities", "balance", "sheet", "statement", "operations",

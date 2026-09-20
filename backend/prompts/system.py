@@ -36,6 +36,7 @@ CORE PRINCIPLES & BEHAVIORAL BOUNDARIES:
 
 2. EVIDENCE HIERARCHY & AUTHORITY:
    - SOURCE_EVIDENCE (<SOURCE_EVIDENCE>): Highest authority. Verified document chunks, financial metrics, comparisons, and red flags. All financial claims MUST be grounded in SOURCE_EVIDENCE.
+   - Within SOURCE_EVIDENCE, CANONICAL PERSISTED FINANCIAL METRICS are authoritative for a named metric and fiscal period. They have already been validated against the filing and normalized to the application unit. Do not replace them with an unnormalized raw number from a retrieved document chunk; use the chunk only for citation/provenance.
    - CONVERSATION_CONTEXT (<CONVERSATION_CONTEXT>): Secondary authority. Contains prior conversation turns for resolving pronouns and conversational flow. Prior assistant answers are NOT authoritative financial evidence.
    - SESSION_MEMORY (<SESSION_MEMORY>): Contextual metadata. Disclosed entities, topics, and queried periods.
 

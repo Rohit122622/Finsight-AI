@@ -67,8 +67,33 @@ export function ResearchChat({
     (c) => c.conversation_id === activeConversationId,
   );
 
+  const [activeMessageId, setActiveMessageId] = useState<string | null>(null);
+
+  const lastAssistantMsg = [...messages].reverse().find((m) => m.role === "assistant");
+  const targetAssistantMsg = activeMessageId
+    ? messages.find((m) => m.message_id === activeMessageId) || lastAssistantMsg
+    : lastAssistantMsg;
+
+  const currentResponse = activeResponse || targetAssistantMsg?.structuredResponse || lastAssistantMsg?.structuredResponse;
+  const currentCitations =
+    targetAssistantMsg?.citations && targetAssistantMsg.citations.length > 0
+      ? targetAssistantMsg.citations
+      : currentResponse?.citations || lastAssistantMsg?.citations || [];
+  const currentClaims =
+    targetAssistantMsg?.claims && targetAssistantMsg.claims.length > 0
+      ? targetAssistantMsg.claims
+      : currentResponse?.claims || lastAssistantMsg?.claims || [];
+
   const handleCitationSelect = (citId: string) => {
     setSelectedCitationId(citId);
+    const parentMsg = messages.find(
+      (m) =>
+        m.citations?.some((c) => c.citation_id === citId) ||
+        m.structuredResponse?.citations?.some((c) => c.citation_id === citId),
+    );
+    if (parentMsg) {
+      setActiveMessageId(parentMsg.message_id);
+    }
     setRightTab("citations");
     setShowEvidenceMobile(true);
   };
@@ -76,12 +101,6 @@ export function ResearchChat({
   const handleSelectPrompt = (prompt: string) => {
     sendMessage(prompt);
   };
-
-  
-  const lastAssistantMsg = [...messages].reverse().find((m) => m.role === "assistant");
-  const currentResponse = activeResponse || lastAssistantMsg?.structuredResponse;
-  const currentCitations = currentResponse?.citations || lastAssistantMsg?.citations || [];
-  const currentClaims = currentResponse?.claims || lastAssistantMsg?.claims || [];
 
   return (
     <div
@@ -351,7 +370,14 @@ export function ResearchChat({
           )}
 
           {rightTab === "risk" && (
-            <FinancialRiskWidget sessionId={sessionId} response={currentResponse} />
+            <FinancialRiskWidget
+              sessionId={sessionId}
+              documentId={
+                currentCitations.find((c) => c.citation_id === selectedCitationId)?.document_id ||
+                currentCitations[0]?.document_id
+              }
+              response={currentResponse}
+            />
           )}
 
           {rightTab === "charts" && (

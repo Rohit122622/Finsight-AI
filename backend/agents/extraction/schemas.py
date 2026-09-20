@@ -79,6 +79,9 @@ class ExtractedMetricsDocument(BaseModel):
     session_id: str
     user_id: Optional[str] = None
     document_filename: Optional[str] = None
+    company_name: Optional[str] = None
+    company: Optional[str] = None
+    ticker: Optional[str] = None
     filing_type: Optional[str] = None
     reporting_currency: Optional[str] = None
     reporting_scale: Optional[str] = None

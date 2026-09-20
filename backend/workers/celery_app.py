@@ -15,7 +15,7 @@ celery_app = Celery(
     "finsentry_worker",
     broker=settings.get_celery_broker_url(),
     backend=settings.get_celery_result_backend(),
-    include=["workers.tasks"],
+    include=["workers.tasks", "workers.email_tasks"],
 )
 
 celery_app.conf.update(

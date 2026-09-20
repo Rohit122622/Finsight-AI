@@ -85,6 +85,8 @@ export interface DocumentItem {
   session_id: string;
   user_id: string;
   filename: string;
+  company_name?: string;
+  fiscal_year?: string;
   file_size: number;
   file_size_bytes?: number;
   file_type?: string;
@@ -170,7 +172,13 @@ export interface AnalysisReport {
   red_flags: RedFlagItem[];
   recommendations: string[];
   status: string;
+  pdf_locked?: boolean;
+  email_status?: "queued" | "sending" | "sent" | "failed" | null;
+  password_available?: boolean;
   created_at: string;
+  download_url?: string;
+  object_key?: string;
+  pdf_size_bytes?: number;
 }
 
 

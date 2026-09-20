@@ -89,3 +89,17 @@ class ExtractionResultResponse(BaseModel):
     target_fields: List[str] = Field(default_factory=list)
     extracted_data: Dict[str, Any] = Field(default_factory=dict)
     chunks_analyzed: int = 0
+
+
+class ComparisonQueryRequest(BaseModel):
+    """Request payload for multi-company financial comparison."""
+
+    document_ids: List[str] = Field(
+        ...,
+        min_length=2,
+        description="List of document IDs to compare (minimum 2, must belong to the same session)",
+    )
+    async_mode: bool = Field(
+        default=True,
+        description="Process in background via Celery worker",
+    )

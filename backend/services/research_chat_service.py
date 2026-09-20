@@ -53,6 +53,7 @@ from schemas.research_api import (
     StreamEventType,
 )
 from schemas.retrieval import (
+    MetadataFilter,
     RetrievalMetadata,
     RetrievalMode,
     RetrievalRequest,
@@ -384,10 +385,13 @@ class ResearchChatService:
     ) -> RetrievalResponse:
         """
         Entity-aware and comparison-aware retrieval orchestration.
+        - Resolves target company entity to canonical document IDs BEFORE retrieval.
         - If multi-entity comparison: performs separate retrieval passes per entity and merges them.
-        - If single-entity: retrieves and applies entity relevance filtering to eliminate cross-entity contamination.
+        - If single-entity: strictly scopes retrieval to the resolved entity's document IDs.
         """
-                                              
+        from utils.company_resolution import is_company_match
+
+        # 1. Multi-entity comparison query handling
         if qu.classification == QueryClassification.COMPARISON and len(qu.entities) >= 2:
             all_results: List[RetrievalResult] = []
             seen_chunks: Set[str] = set()
@@ -430,7 +434,35 @@ class ResearchChatService:
                 ),
             )
 
-        # Standard single or multi-part retrieval
+        # 2. Single-entity resolution BEFORE retrieval
+        target_doc_ids: Optional[List[str]] = request.document_ids
+        if len(qu.entities) == 1:
+            target_entity = qu.entities[0]
+            matching_doc_ids: Set[str] = set()
+            try:
+                db = mongodb.get_db()
+                docs = await db.documents.find(
+                    {"session_id": session_id, "user_id": user_id},
+                    {"document_id": 1, "filename": 1, "company_name": 1, "ticker": 1},
+                ).to_list(length=100)
+                if not docs:
+                    docs = await db.extracted_metrics.find(
+                        {"session_id": session_id, "user_id": user_id},
+                        {"document_id": 1, "company_name": 1, "document_filename": 1},
+                    ).to_list(length=100)
+                for doc in docs:
+                    if is_company_match(target_entity, doc):
+                        doc_id = doc.get("document_id")
+                        if doc_id:
+                            matching_doc_ids.add(doc_id)
+            except Exception as db_exc:
+                logger.warning("Error resolving target entity '%s' before retrieval: %s", target_entity, db_exc)
+
+            if matching_doc_ids:
+                target_doc_ids = list(matching_doc_ids)
+
+        # 3. Standard scoped retrieval
+        scoped_filters = MetadataFilter(document_ids=target_doc_ids) if target_doc_ids else None
         retrieval_resp = await retrieval_service.retrieve(
             session_id=session_id,
             user_id=user_id,
@@ -439,7 +471,8 @@ class ResearchChatService:
                 top_k=request.top_k,
                 mode=request.mode,
                 score_threshold=request.score_threshold,
-                document_ids=request.document_ids,
+                document_ids=target_doc_ids,
+                filters=scoped_filters,
             ),
         )
 
@@ -455,7 +488,8 @@ class ResearchChatService:
                     top_k=per_sub_k,
                     mode=request.mode,
                     score_threshold=request.score_threshold,
-                    document_ids=request.document_ids,
+                    document_ids=target_doc_ids,
+                    filters=scoped_filters,
                 )
                 resp_sub = await retrieval_service.retrieve(
                     session_id=session_id,
@@ -472,7 +506,7 @@ class ResearchChatService:
             retrieval_resp.results = top_results
             retrieval_resp.total = len(top_results)
 
-        # Retrieval Query Expansion Merging (e.g. domain synonyms, temporal signals, inherited entities)
+        # Retrieval Query Expansion Merging
         elif qu.expanded_queries:
             all_results: List[RetrievalResult] = list(retrieval_resp.results)
             seen_chunks: Set[str] = {r.chunk_id for r in all_results}
@@ -483,7 +517,8 @@ class ResearchChatService:
                     top_k=request.top_k,
                     mode=request.mode,
                     score_threshold=request.score_threshold,
-                    document_ids=request.document_ids,
+                    document_ids=target_doc_ids,
+                    filters=scoped_filters,
                 )
                 resp_exp = await retrieval_service.retrieve(
                     session_id=session_id,
@@ -500,60 +535,146 @@ class ResearchChatService:
             retrieval_resp.results = top_results
             retrieval_resp.total = len(top_results)
 
-                                                                 
-        if len(qu.entities) == 1:
-            target_entity = qu.entities[0].lower()
-            words = [
-                w for w in re.split(r"[\s\-]+", target_entity)
-                if w and w not in {"&", "and", "the", "inc", "corp", "co", "ltd", "llc", "plc", "group"}
-            ]
-
-                                                                                        
-            matching_doc_ids: Set[str] = set()
-            try:
-                db = mongodb.get_db()
-                docs = await db.documents.find(
-                    {"session_id": session_id, "user_id": user_id},
-                    {"document_id": 1, "filename": 1, "chunks.text": 1},
-                ).to_list(length=100)
-                for doc in docs:
-                    doc_id = doc.get("document_id")
-                    fn = (doc.get("filename") or "").lower()
-                    all_text = " ".join([c.get("text", "") for c in doc.get("chunks", [])]).lower()
-                    full_corpus = f"{fn} {all_text}"
-                    if target_entity in full_corpus or (len(words) >= 1 and all(w in full_corpus for w in words)):
-                        if doc_id:
-                            matching_doc_ids.add(doc_id)
-            except Exception as db_exc:
-                logger.warning("Error fetching session documents for entity matching: %s", db_exc)
-
-            filtered_results: List[RetrievalResult] = []
-            for r in retrieval_resp.results:
-                text_lower = (r.source_text or "").lower()
-                fn_lower = (r.document_filename or "").lower()
-                                     
-                                                                                   
-                                                                                                        
-                if (
-                    (r.document_id and r.document_id in matching_doc_ids)
-                    or target_entity in text_lower
-                    or target_entity in fn_lower
-                    or (len(words) >= 2 and all(w in text_lower for w in words))
-                ):
-                    filtered_results.append(r)
-
-                                                      
-            if filtered_results:
-                retrieval_resp.results = filtered_results
-                retrieval_resp.total = len(filtered_results)
-            else:
-                                                                                                                          
-                retrieval_resp.results = []
-                retrieval_resp.total = 0
-
         return retrieval_resp
 
-                                                                       
+    async def _check_pre_retrieval_gates(
+        self,
+        session_id: str,
+        user_id: str,
+        query: str,
+        qu: QueryUnderstandingResult,
+        context_messages: List[ContextConversationMessage],
+        session_memory: Optional[Any] = None,
+    ) -> Optional[ResearchResponse]:
+        """
+        Pre-retrieval validation gates:
+        1. Multi-Company Ambiguity Gate:
+           If session has multiple distinct companies, and query does not specify a company,
+           and is not a comparison query, and conversation history does not resolve it:
+           STOP BEFORE RETRIEVAL / LLM -> Return clarification message with confidence=0.0.
+        2. Future / Invalid Period Refusal Gate:
+           If query asks for an unsupported future fiscal period (e.g. FY2029, FY2030) exceeding
+           the canonical validated reporting period of the document:
+           STOP BEFORE RETRIEVAL / LLM -> Return clean refusal with confidence=0.0, refused=True.
+        """
+        from utils.company_resolution import is_company_match, get_canonical_company_key
+        db = mongodb.get_db()
+
+        # Fetch session documents and extracted metrics
+        session_docs = await db.documents.find(
+            {"session_id": session_id, "user_id": user_id},
+            {"document_id": 1, "filename": 1, "company_name": 1, "ticker": 1},
+        ).to_list(length=100)
+
+        metrics_records = await db.extracted_metrics.find(
+            {"session_id": session_id, "user_id": user_id},
+            {"document_id": 1, "company_name": 1, "reporting_period": 1, "multi_year_data": 1, "document_filename": 1},
+        ).to_list(length=100)
+
+        # Collect distinct companies in session
+        distinct_companies: Set[str] = set()
+        for d in session_docs:
+            c = d.get("company_name")
+            if c:
+                distinct_companies.add(c.strip())
+            elif d.get("filename"):
+                can = get_canonical_company_key(d["filename"])
+                if can:
+                    distinct_companies.add(can.title())
+
+        for m in metrics_records:
+            c = m.get("company_name")
+            if c:
+                distinct_companies.add(c.strip())
+            elif m.get("document_filename"):
+                can = get_canonical_company_key(m["document_filename"])
+                if can:
+                    distinct_companies.add(can.title())
+
+        # Gate 1: Multi-Company Ambiguity Gate
+        if len(distinct_companies) >= 2:
+            if not qu.entities and qu.classification != QueryClassification.COMPARISON:
+                # Check recent history
+                recent_entity = None
+                for msg in reversed(context_messages[-4:]):
+                    for comp in distinct_companies:
+                        if is_company_match(comp, msg.content):
+                            recent_entity = comp
+                            break
+                    if recent_entity:
+                        break
+
+                if not recent_entity:
+                    sorted_comps = sorted(list(distinct_companies))
+                    comp_display = " or ".join(sorted_comps) if len(sorted_comps) == 2 else ", ".join(sorted_comps)
+                    clarification = f"Which company would you like me to analyze — {comp_display}?"
+                    logger.info("PRE_RETRIEVAL_GATE: Multi-company ambiguity triggered for query '%s' -> %s", query, clarification)
+                    return ResearchResponse(
+                        session_id=session_id,
+                        user_id=user_id,
+                        query=query,
+                        answer=clarification,
+                        confidence=0.0,
+                        confidence_level=ConfidenceLevel.LOW,
+                        citations=[],
+                        claims=[],
+                        refused=False,
+                        grounding_score=0.0,
+                        hallucination_detected=False,
+                        synthesis_notes="Multi-company ambiguity resolved before retrieval.",
+                    )
+
+        # Gate 2: Future / Invalid Fiscal Period Refusal Gate
+        requested_years: List[int] = list(qu.temporal_signals.years)
+        for fy in qu.temporal_signals.fiscal_years:
+            m = re.search(r"20\d\d", fy)
+            if m:
+                requested_years.append(int(m.group(0)))
+
+        for y_match in re.finditer(r"\b(20[2-9]\d)\b", query):
+            yr = int(y_match.group(1))
+            if yr not in requested_years:
+                requested_years.append(yr)
+
+        if requested_years:
+            # Determine maximum validated reporting year across target document(s)
+            max_validated_year = 2025  # Default upper bound
+            doc_max_years: Dict[str, int] = {}
+            for m in metrics_records:
+                doc_id = m.get("document_id", "")
+                rep_p = m.get("reporting_period", "")
+                rep_match = re.search(r"20\d\d", str(rep_p))
+                if rep_match:
+                    doc_max_years[doc_id] = max(doc_max_years.get(doc_id, 0), int(rep_match.group(0)))
+                doc_fn = m.get("document_filename") or m.get("filename", "")
+                fn_match = re.search(r"(?<!\d)(20\d\d)(?!\d)", str(doc_fn))
+                if fn_match:
+                    doc_max_years[doc_id] = max(doc_max_years.get(doc_id, 0), int(fn_match.group(1)))
+
+            if doc_max_years:
+                max_validated_year = max(doc_max_years.values())
+
+            for yr in requested_years:
+                if yr > max_validated_year:
+                    company_label = qu.entities[0] if qu.entities else ("the uploaded filing" if len(distinct_companies) <= 1 else "the target company")
+                    refusal = f"Financial information for FY{yr} is not available in the uploaded {company_label} filing. The latest reporting period covered is FY{max_validated_year}."
+                    logger.info("PRE_RETRIEVAL_GATE: Future-year refusal triggered for requested year %d (> max %d) -> %s", yr, max_validated_year, refusal)
+                    return ResearchResponse(
+                        session_id=session_id,
+                        user_id=user_id,
+                        query=query,
+                        answer=refusal,
+                        confidence=0.0,
+                        confidence_level=ConfidenceLevel.LOW,
+                        citations=[],
+                        claims=[],
+                        refused=True,
+                        grounding_score=0.0,
+                        hallucination_detected=False,
+                        synthesis_notes="Future fiscal period refusal before retrieval.",
+                    )
+
+        return None
 
     async def execute_chat(
         self,
@@ -620,6 +741,57 @@ class ResearchChatService:
             )
             trace_ctx.end_stage("query_understanding")
             trace_ctx.record_query_understanding(qu)
+
+            # -------------------------------------------------------------
+            # Pre-Retrieval Validation Gates (Ambiguity & Future Periods)
+            # -------------------------------------------------------------
+            gate_response = await self._check_pre_retrieval_gates(
+                session_id=session_id,
+                user_id=user_id,
+                query=request.message,
+                qu=qu,
+                context_messages=context_messages,
+                session_memory=session_memory,
+            )
+            if gate_response is not None:
+                validation = ValidationResult(
+                    valid=True,
+                    status=ValidationStatus.VALID,
+                    validation_errors=[],
+                    validation_warnings=[],
+                    final_confidence=gate_response.confidence,
+                )
+                if hasattr(gate_response, "metadata"):
+                    gate_response.metadata.trace_id = trace_ctx.trace_id
+
+                assistant_msg = await self.persist_message(
+                    conversation_id=conversation_id,
+                    session_id=session_id,
+                    user_id=user_id,
+                    role="assistant",
+                    content=gate_response.answer,
+                    response=gate_response,
+                    validation=validation,
+                )
+                trace = trace_ctx.finalize(
+                    status=StageStatus.REFUSED.value if gate_response.refused else StageStatus.SUCCESS.value,
+                    final_response=gate_response,
+                )
+                try:
+                    await observability_service.save_trace(trace)
+                except Exception as obs_exc:
+                    logger.warning("Failed to save research trace (non-fatal): %s", obs_exc)
+
+                return ResearchChatResponse(
+                    conversation_id=conversation_id,
+                    message_id=assistant_msg.message_id,
+                    session_id=session_id,
+                    user_id=user_id,
+                    trace_id=trace_ctx.trace_id,
+                    response=gate_response,
+                    validation=validation,
+                    created_at=assistant_msg.created_at,
+                )
 
                                                                 
             trace_ctx.start_stage("retrieval")
@@ -840,6 +1012,59 @@ class ResearchChatService:
                     "is_follow_up": qu.is_follow_up,
                 },
             )
+
+            # Pre-Retrieval Validation Gates for Streaming
+            gate_response = await self._check_pre_retrieval_gates(
+                session_id=session_id,
+                user_id=user_id,
+                query=request.message,
+                qu=qu,
+                context_messages=context_messages,
+                session_memory=session_memory,
+            )
+            if gate_response is not None:
+                validation = ValidationResult(
+                    valid=True,
+                    status=ValidationStatus.VALID,
+                    validation_errors=[],
+                    validation_warnings=[],
+                    final_confidence=gate_response.confidence,
+                )
+                assistant_msg = await self.persist_message(
+                    conversation_id=conversation_id,
+                    session_id=session_id,
+                    user_id=user_id,
+                    role="assistant",
+                    content=gate_response.answer,
+                    response=gate_response,
+                    validation=validation,
+                )
+                trace = trace_ctx.finalize(
+                    status=StageStatus.REFUSED.value if gate_response.refused else StageStatus.SUCCESS.value,
+                    final_response=gate_response,
+                )
+                try:
+                    await observability_service.save_trace(trace)
+                except Exception as obs_exc:
+                    logger.warning("Failed to save research trace (non-fatal): %s", obs_exc)
+
+                yield make_event(
+                    StreamEventType.CONTENT_DELTA,
+                    {"content": gate_response.answer, "index": 0},
+                )
+                yield make_event(
+                    StreamEventType.COMPLETED,
+                    {
+                        "conversation_id": conversation_id,
+                        "message_id": assistant_msg.message_id,
+                        "answer": gate_response.answer,
+                        "citations": [],
+                        "confidence": gate_response.confidence,
+                        "validation_status": "VALID",
+                        "trace_id": trace_ctx.trace_id,
+                    },
+                )
+                return
 
                                                                 
             trace_ctx.start_stage("retrieval")

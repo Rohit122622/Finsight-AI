@@ -20,6 +20,215 @@ interface ChatMessageProps {
   onSelectResponse?: () => void;
 }
 
+function renderInlineFormatted(text: string) {
+  // Replace inline bold, code, and unescape backslashes
+  const clean = text
+    .replace(/\\"/g, '"')
+    .replace(/\\'/g, "'")
+    .replace(/\\\\/g, "\\");
+
+  const parts = clean.split(/(\*\*.*?\*\*|`.*?`)/g);
+  return parts.map((part, i) => {
+    if (part.startsWith("**") && part.endsWith("**") && part.length >= 4) {
+      return (
+        <strong key={i} style={{ fontWeight: 600, color: "var(--color-text-primary)" }}>
+          {part.slice(2, -2)}
+        </strong>
+      );
+    }
+    if (part.startsWith("`") && part.endsWith("`") && part.length >= 2) {
+      return (
+        <code
+          key={i}
+          style={{
+            backgroundColor: "var(--color-bg-surface-alt)",
+            padding: "0.1rem 0.3rem",
+            borderRadius: "3px",
+            fontFamily: "monospace",
+            fontSize: "0.8125rem",
+          }}
+        >
+          {part.slice(1, -1)}
+        </code>
+      );
+    }
+    return part;
+  });
+}
+
+function FormattedMarkdownContent({ content }: { content: string }) {
+  if (!content) return null;
+
+  // Unescape escaped newlines and literal slashes
+  const normalized = content
+    .replace(/\\n/g, "\n")
+    .replace(/\r\n/g, "\n");
+
+  const lines = normalized.split("\n");
+  const elements: React.ReactNode[] = [];
+  let inList: "ul" | "ol" | null = null;
+  let listItems: string[] = [];
+  let inTable = false;
+  let tableRows: string[][] = [];
+
+  const flushList = () => {
+    if (inList && listItems.length > 0) {
+      const items = [...listItems];
+      const type = inList;
+      elements.push(
+        type === "ul" ? (
+          <ul key={`list-${elements.length}`} style={{ margin: "0.5rem 0", paddingLeft: "1.25rem" }}>
+            {items.map((it, idx) => (
+              <li key={idx} style={{ marginBottom: "0.25rem", fontSize: "0.875rem" }}>
+                {renderInlineFormatted(it)}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <ol key={`list-${elements.length}`} style={{ margin: "0.5rem 0", paddingLeft: "1.25rem" }}>
+            {items.map((it, idx) => (
+              <li key={idx} style={{ marginBottom: "0.25rem", fontSize: "0.875rem" }}>
+                {renderInlineFormatted(it)}
+              </li>
+            ))}
+          </ol>
+        )
+      );
+      listItems = [];
+      inList = null;
+    }
+  };
+
+  const flushTable = () => {
+    if (inTable && tableRows.length > 0) {
+      const rows = [...tableRows];
+      const headerRow = rows[0];
+      const bodyRows = rows.slice(1).filter((r) => !r.every((c) => /^-+$/.test(c.trim())));
+
+      elements.push(
+        <div
+          key={`table-${elements.length}`}
+          style={{
+            overflowX: "auto",
+            margin: "0.75rem 0",
+            borderRadius: "0.375rem",
+            border: "1px solid var(--color-border-subtle)",
+          }}
+        >
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.8125rem" }}>
+            <thead>
+              <tr style={{ backgroundColor: "var(--color-bg-surface-alt)", borderBottom: "1px solid var(--color-border-subtle)" }}>
+                {headerRow.map((cell, cidx) => (
+                  <th key={cidx} style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontWeight: 600 }}>
+                    {renderInlineFormatted(cell.trim())}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {bodyRows.map((row, ridx) => (
+                <tr key={ridx} style={{ borderBottom: ridx < bodyRows.length - 1 ? "1px solid var(--color-border-subtle)" : "none" }}>
+                  {row.map((cell, cidx) => (
+                    <td key={cidx} style={{ padding: "0.5rem 0.75rem" }}>
+                      {renderInlineFormatted(cell.trim())}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+      tableRows = [];
+      inTable = false;
+    }
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+
+    if (!line) {
+      flushList();
+      flushTable();
+      continue;
+    }
+
+    // Markdown Table check: starts with | and ends with |
+    if (line.startsWith("|") && line.endsWith("|")) {
+      flushList();
+      inTable = true;
+      const cells = line.slice(1, -1).split("|");
+      tableRows.push(cells);
+      continue;
+    } else {
+      flushTable();
+    }
+
+    // Headings
+    if (line.startsWith("### ")) {
+      flushList();
+      elements.push(
+        <h4 key={`h4-${elements.length}`} style={{ fontSize: "0.9375rem", fontWeight: 600, margin: "0.75rem 0 0.375rem 0", color: "var(--color-text-primary)" }}>
+          {renderInlineFormatted(line.slice(4))}
+        </h4>
+      );
+      continue;
+    }
+    if (line.startsWith("## ")) {
+      flushList();
+      elements.push(
+        <h3 key={`h3-${elements.length}`} style={{ fontSize: "1rem", fontWeight: 700, margin: "0.875rem 0 0.5rem 0", color: "var(--color-text-primary)" }}>
+          {renderInlineFormatted(line.slice(3))}
+        </h3>
+      );
+      continue;
+    }
+    if (line.startsWith("# ")) {
+      flushList();
+      elements.push(
+        <h2 key={`h2-${elements.length}`} style={{ fontSize: "1.125rem", fontWeight: 700, margin: "1rem 0 0.5rem 0", color: "var(--color-text-primary)" }}>
+          {renderInlineFormatted(line.slice(2))}
+        </h2>
+      );
+      continue;
+    }
+
+    // Unordered list
+    if (/^[-*]\s+/.test(line)) {
+      if (inList !== "ul") {
+        flushList();
+        inList = "ul";
+      }
+      listItems.push(line.replace(/^[-*]\s+/, ""));
+      continue;
+    }
+
+    // Ordered list
+    if (/^\d+\.\s+/.test(line)) {
+      if (inList !== "ol") {
+        flushList();
+        inList = "ol";
+      }
+      listItems.push(line.replace(/^\d+\.\s+/, ""));
+      continue;
+    }
+
+    flushList();
+
+    // Normal paragraph
+    elements.push(
+      <p key={`p-${elements.length}`} style={{ margin: "0.375rem 0", lineHeight: 1.6, fontSize: "0.875rem", color: "var(--color-text-primary)" }}>
+        {renderInlineFormatted(line)}
+      </p>
+    );
+  }
+
+  flushList();
+  flushTable();
+
+  return <>{elements}</>;
+}
+
 export function ChatMessage({
   message,
   onCitationClick,
@@ -97,7 +306,7 @@ export function ChatMessage({
           boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
         }}
       >
-        {}
+        {/* Header Bar */}
         <div
           style={{
             display: "flex",
@@ -127,7 +336,6 @@ export function ChatMessage({
               Research Agent
             </span>
 
-            {}
             {message.validation_status && (
               <span
                 style={{
@@ -143,7 +351,6 @@ export function ChatMessage({
               </span>
             )}
 
-            {}
             {structured?.metadata?.is_fallback && (
               <span
                 style={{
@@ -182,7 +389,6 @@ export function ChatMessage({
           </div>
         </div>
 
-        {}
         {isError ? (
           <div
             style={{
@@ -212,17 +418,22 @@ export function ChatMessage({
           />
         ) : (
           <div>
-            {}
+            {/* Formatted Markdown Body */}
             <div
               style={{
                 fontSize: "0.875rem",
                 color: "var(--color-text-primary)",
                 lineHeight: 1.6,
-                whiteSpace: "pre-wrap",
                 wordBreak: "break-word",
               }}
             >
-              {message.content || (isStreaming ? "Synthesizing evidence-backed findings..." : "")}
+              {message.content ? (
+                <FormattedMarkdownContent content={message.content} />
+              ) : isStreaming ? (
+                "Synthesizing evidence-backed findings..."
+              ) : (
+                ""
+              )}
             </div>
 
             {}

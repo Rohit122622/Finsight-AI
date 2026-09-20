@@ -23,6 +23,7 @@ from schemas.context import (
 )
 from schemas.prompt import PromptConfiguration
 from schemas.query_understanding import (
+    QueryClassification,
     QueryUnderstandingRequest,
     QueryUnderstandingResult,
 )
@@ -61,6 +62,10 @@ from utils.financial_grounding import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Concise, grounded fallback used when the model produced no usable answer. We NEVER
+# surface raw document text as the answer (which previously dumped unrelated filings).
+_CONCISE_UNAVAILABLE = "The requested value is not reported in the uploaded filing."
 
                          
 CAUSAL_TRIGGERS = [
@@ -107,8 +112,8 @@ class EvidenceReasoningService:
             session_id,
             user_id,
         )
-
-                                                                   
+        # 1. Query Understanding
+        t_qu_start = time.perf_counter()
         qu = query_understanding
         if qu is None:
             qu = query_understanding_service.understand_query(
@@ -117,8 +122,10 @@ class EvidenceReasoningService:
                     session_id=session_id,
                 )
             )
+        qu_time_ms = (time.perf_counter() - t_qu_start) * 1000
 
-                                                                
+        # 2. Context Building & Retrieval
+        t_ctx_start = time.perf_counter()
         res_context = context
         if res_context is None:
             res_context = await context_builder_service.build_context(
@@ -129,11 +136,173 @@ class EvidenceReasoningService:
                 limits=limits,
                 auto_retrieve=True,
             )
+        ctx_time_ms = (time.perf_counter() - t_ctx_start) * 1000
 
-                                                    
+        # 3. Evidence Sufficiency
         sufficiency = self._evaluate_evidence_sufficiency(query, qu, res_context)
+        # Check for multi-company ambiguity (e.g. "What was the revenue?" with multiple companies in session)
+        if qu and not qu.entities and not qu.is_follow_up and (qu.financial_signals.metrics or "revenue" in query.lower() or "margin" in query.lower() or "income" in query.lower() or "debt" in query.lower() or "red flag" in query.lower()):
+            try:
+                from database.connection import mongodb
+                from utils.company_resolution import get_canonical_company_key
+                db = mongodb.get_db()
+                docs = await db.documents.find({"session_id": session_id, "user_id": user_id}).to_list(length=20)
+                if not docs:
+                    docs = await db.extracted_metrics.find({"session_id": session_id, "user_id": user_id}).to_list(length=20)
+                if not docs and res_context and res_context.documents:
+                    docs = [
+                        {
+                            "company_name": getattr(d, "company_name", None) or d.metadata.get("company_name") or d.document_filename,
+                            "filename": d.document_filename,
+                        }
+                        for d in res_context.documents
+                    ]
+                company_names: List[str] = []
+                for d in docs:
+                    cname = str(d.get("company_name") or d.get("filename") or "").strip()
+                    if not cname:
+                        continue
+                    can_key = get_canonical_company_key(cname)
+                    if can_key == "apple":
+                        c_clean = "Apple"
+                    elif can_key == "bed bath & beyond":
+                        c_clean = "Bed Bath & Beyond"
+                    elif can_key == "microsoft":
+                        c_clean = "Microsoft"
+                    else:
+                        c_clean = cname.split(".")[0].replace("_", " ").title()
+                    if c_clean and c_clean not in company_names:
+                        company_names.append(c_clean)
 
-                                              
+                if len(company_names) >= 2:
+                    exec_time = (time.perf_counter() - start_time) * 1000
+                    if len(company_names) == 2:
+                        clarification_text = f"Which company would you like me to analyze — {company_names[0]} or {company_names[1]}?"
+                    else:
+                        clarification_text = f"Which company would you like me to analyze — {', '.join(company_names[:-1])}, or {company_names[-1]}?"
+                    return ResearchResponse(
+                        session_id=session_id,
+                        user_id=user_id,
+                        query=query,
+                        answer=clarification_text,
+                        refused=False,
+                        claims=[],
+                        citations=[],
+                        confidence=1.0,
+                        confidence_level=ConfidenceLevel.HIGH,
+                        key_points=[],
+                        limitations=[],
+                        evidence_conflicts=[],
+                        sufficiency=sufficiency,
+                        confidence_assessment=ConfidenceAssessment(
+                            score=1.0,
+                            level=ConfidenceLevel.HIGH,
+                            rationale="Ambiguous multi-company request: requesting company specification.",
+                        ),
+                        metadata=ReasoningMetadata(
+                            total_claims=0,
+                            supported_claims=0,
+                            unsupported_claims=0,
+                            chunks_analyzed=len(res_context.documents) if res_context else 0,
+                            execution_time_ms=exec_time,
+                            llm_provider="deterministic",
+                            llm_model="rule-based",
+                        ),
+                    )
+            except Exception as exc:
+                logger.warning("Error evaluating multi-company clarification: %s", exc)
+
+        # Handle Structured Red Flag Synthesized Response
+        is_red_flag_query = bool(re.search(r"\b(?:red\s*flags?|forensic\s*(?:flags?|findings?))\b", query, re.IGNORECASE))
+        if qu and is_red_flag_query:
+            target_ent = "the company"
+            if qu.entities and qu.entities[0].lower() not in {"and", "the", "a", "an"}:
+                target_ent = qu.entities[0]
+            elif res_context.documents:
+                target_ent = res_context.documents[0].document_filename.split(".")[0].replace("_", " ").title()
+
+            if res_context.red_flags:
+                flag_summaries = []
+                for rf in res_context.red_flags:
+                    flag_summaries.append(f"• **{rf.title}** [{rf.severity}]: {rf.description}")
+                synthesis_answer = f"### Forensic Financial Red Flags for {target_ent}\n\n" + "\n".join(flag_summaries)
+                claims = self._extract_and_verify_claims(synthesis_answer, res_context, qu)
+                citations = self._match_and_validate_citations([], synthesis_answer, claims, res_context)
+                exec_time = (time.perf_counter() - start_time) * 1000
+                return ResearchResponse(
+                    session_id=session_id,
+                    user_id=user_id,
+                    query=query,
+                    answer=synthesis_answer,
+                    refused=False,
+                    claims=claims,
+                    citations=citations,
+                    confidence=0.95,
+                    confidence_level=ConfidenceLevel.HIGH,
+                    key_points=[rf.title for rf in res_context.red_flags[:5]],
+                    limitations=[],
+                    evidence_conflicts=[],
+                    sufficiency=sufficiency,
+                    confidence_assessment=ConfidenceAssessment(
+                        score=0.95,
+                        level=ConfidenceLevel.HIGH,
+                        factors={"forensic_synthesis": 0.95},
+                    ),
+                    metadata=ReasoningMetadata(
+                        total_claims=len(claims),
+                        supported_claims=len(claims),
+                        unsupported_claims=0,
+                        chunks_analyzed=len(res_context.documents),
+                        execution_time_ms=exec_time,
+                    ),
+                )
+            elif not res_context.red_flags and res_context.documents:
+                clean_no_flags = f"Forensic analysis of {target_ent}'s financial disclosures did not identify any material financial red flags."
+                exec_time = (time.perf_counter() - start_time) * 1000
+                citations = []
+                if res_context.documents:
+                    doc = res_context.documents[0]
+                    citations.append(
+                        ResearchCitation(
+                            citation_id="cit_001",
+                            chunk_id=doc.chunk_id,
+                            document_id=doc.document_id,
+                            document_filename=doc.document_filename,
+                            page_number=doc.page_number,
+                            section=doc.section,
+                            quoted_snippet=sanitize_user_facing_text(doc.source_text[:120]),
+                            is_valid=True,
+                        )
+                    )
+                return ResearchResponse(
+                    session_id=session_id,
+                    user_id=user_id,
+                    query=query,
+                    answer=clean_no_flags,
+                    refused=False,
+                    claims=[],
+                    citations=citations,
+                    confidence=0.95,
+                    confidence_level=ConfidenceLevel.HIGH,
+                    key_points=["No material forensic red flags identified."],
+                    limitations=[],
+                    evidence_conflicts=[],
+                    sufficiency=sufficiency,
+                    confidence_assessment=ConfidenceAssessment(
+                        score=0.95,
+                        level=ConfidenceLevel.HIGH,
+                        factors={"forensic_synthesis": 0.95},
+                    ),
+                    metadata=ReasoningMetadata(
+                        total_claims=0,
+                        supported_claims=0,
+                        unsupported_claims=0,
+                        chunks_analyzed=len(res_context.documents),
+                        execution_time_ms=exec_time,
+                    ),
+                )
+
+        # 4. Handle Insufficient Evidence Refusal
         if not sufficiency.is_sufficient:
             if qu and qu.temporal_signals.years and any(y >= 2026 for y in qu.temporal_signals.years):
                 fut_year = next(y for y in qu.temporal_signals.years if y >= 2026)
@@ -145,8 +314,14 @@ class EvidenceReasoningService:
             elif qu and qu.entities and len(qu.entities) >= 2 and any("Disclosures for entity" in item for item in (sufficiency.missing_evidence_items or [])):
                 missing_str = ", ".join([e for e in qu.entities if any(e.lower() in item.lower() for item in (sufficiency.missing_evidence_items or []))])
                 refusal_text = f"The comparison cannot be completed because verified financial disclosures for {missing_str or 'one of the entities'} are unavailable in the uploaded documents."
-            elif qu and qu.entities and len(qu.entities) == 1 and any("Disclosures for entity" in item for item in (sufficiency.missing_evidence_items or [])):
-                refusal_text = f"No verified financial disclosures or documents found for '{qu.entities[0]}' in this research session."
+            elif qu and qu.entities and len(qu.entities) == 1:
+                ent = qu.entities[0]
+                if any("Disclosures for entity" in item for item in (sufficiency.missing_evidence_items or [])):
+                    refusal_text = f"The session does not contain a {ent} document."
+                elif qu.financial_signals.metrics and any("Metric" in item for item in (sufficiency.missing_evidence_items or [])):
+                    refusal_text = f"The {ent} document does not contain sufficient evidence to determine this metric."
+                else:
+                    refusal_text = f"The {ent} document does not contain sufficient evidence to answer this question."
             else:
                 refusal_text = "The provided documents do not contain sufficient information to answer this question."
             exec_time = (time.perf_counter() - start_time) * 1000
@@ -180,7 +355,8 @@ class EvidenceReasoningService:
                 ),
             )
 
-                                                  
+        # 5. Prompt Construction
+        t_prompt_start = time.perf_counter()
         prompt_pkg = await prompt_builder.build_prompt_package(
             session_id=session_id,
             user_id=user_id,
@@ -190,37 +366,47 @@ class EvidenceReasoningService:
             config=prompt_config,
             auto_build_context=False,
         )
+        prompt_time_ms = (time.perf_counter() - t_prompt_start) * 1000
 
-                                                                              
+        # 6. LLM Generation
+        t_llm_start = time.perf_counter()
         fallback_result = await llm_fallback_service.generate_with_fallback(
             prompt=prompt_pkg.composed_user_prompt,
             system_prompt=prompt_pkg.system_prompt,
             is_structured_json=False,
         )
         raw_llm_output = fallback_result.content
+        llm_time_ms = (time.perf_counter() - t_llm_start) * 1000
 
-                                                       
+        # 7. Response Parsing, Claim Extraction & Citation Verification
+        t_verif_start = time.perf_counter()
         answer_text, key_points, limitations, raw_citations = self._parse_llm_output(
             raw_llm_output, res_context
         )
 
-                                                         
         claims = self._extract_and_verify_claims(answer_text, res_context, qu)
 
-                                                   
         citations = self._match_and_validate_citations(
             raw_citations, answer_text, claims, res_context
         )
 
-                                                
         conflicts = self._detect_conflicts(res_context)
 
-                                             
         confidence_assessment = self._calculate_confidence(
             res_context, sufficiency, claims, citations, conflicts
         )
+        verif_time_ms = (time.perf_counter() - t_verif_start) * 1000
 
         exec_time = (time.perf_counter() - start_time) * 1000
+        logger.info(
+            "Research reasoning finished in %.1fms (query_understanding_ms=%.1f, context_ms=%.1f, prompt_ms=%.1f, llm_ms=%.1f, verification_ms=%.1f)",
+            exec_time,
+            qu_time_ms,
+            ctx_time_ms,
+            prompt_time_ms,
+            llm_time_ms,
+            verif_time_ms,
+        )
 
         supported_count = sum(1 for c in claims if c.support_status == ClaimSupportStatus.SUPPORTED)
         unsupported_count = sum(1 for c in claims if c.support_status == ClaimSupportStatus.UNSUPPORTED)
@@ -529,14 +715,16 @@ class EvidenceReasoningService:
                 limitations = data.get("limitations") or []
                 citations = data.get("citations") or []
                 
-                                                                                     
-                if answer == "Analysis generated from verified session document context." or not any(c.isdigit() for c in answer):
-                    doc_snippets = [d.source_text.strip() for d in context.documents if d.source_text.strip()]
-                    metric_snippets = [f"{m.metric_name.upper()} is {m.value}." for m in context.metrics]
-                    combined = doc_snippets + metric_snippets
-                    if combined:
-                        answer = " ".join(combined[:2])
-                
+                # Only the generic placeholder (no real content) is replaced — and NEVER with
+                # raw document text. A valid textual answer (e.g. an "unavailable / not reported"
+                # response, which legitimately contains no digits) is preserved as-is.
+                if answer.strip() == "Analysis generated from verified session document context.":
+                    metric_snippets = [
+                        f"{m.metric_name.replace('_', ' ').title()} is {m.value}."
+                        for m in context.metrics if getattr(m, "value", None) is not None
+                    ]
+                    answer = " ".join(metric_snippets[:3]) if metric_snippets else _CONCISE_UNAVAILABLE
+
                 if answer.strip():
                     clean_ans = sanitize_user_facing_text(answer)
                     clean_kp = [sanitize_user_facing_text(kp) for kp in key_points if sanitize_user_facing_text(kp)]
@@ -556,15 +744,14 @@ class EvidenceReasoningService:
 
         answer = raw_output.strip()
 
-                                                                                
+        # Never surface raw document text as the answer. Use a concise, grounded fallback:
+        # short metric statements when available, otherwise a concise unavailable message.
         if not answer:
-            doc_snippets = [d.source_text.strip() for d in context.documents if d.source_text.strip()]
-            metric_snippets = [f"{m.metric_name.upper()} is {m.value}" for m in context.metrics]
-            combined = doc_snippets + metric_snippets
-            if combined:
-                answer = " ".join(combined[:2])
-            else:
-                answer = "Based on verified evidence context."
+            metric_snippets = [
+                f"{m.metric_name.replace('_', ' ').title()} is {m.value}."
+                for m in context.metrics if getattr(m, "value", None) is not None
+            ]
+            answer = " ".join(metric_snippets[:3]) if metric_snippets else _CONCISE_UNAVAILABLE
 
                                           
         for line in answer.split("\n"):

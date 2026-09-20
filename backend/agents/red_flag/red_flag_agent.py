@@ -168,17 +168,17 @@ CANONICAL_METRIC_SEMANTIC_SPECS: Dict[str, Dict[str, Any]] = {
     "gross_margin": {
         "positive_aliases": [
             "gross_margin", "gross_profit_margin", "gm",
-            "gross_margin_percentage", "gross_profit"
+            "gross_margin_percentage"
         ],
         "positive_keywords": [
-            "gross margin", "gross profit margin", "gross profit",
+            "gross margin", "gross profit margin",
             "gross margin percentage", "cost of sales", "cost of goods sold"
         ],
         "negative_keywords": [
             "operating margin", "net margin", "ebitda margin",
             "operating profit margin", "net profit margin"
         ],
-        "disallowed_units": [],
+        "disallowed_units": ["$", "usd", "inr", "eur", "gbp", "₹", "crores", "lakhs", "millions", "billions", "thousands"],
         "is_percentage_or_ratio": True,
     },
     "prior_gross_margin": {
@@ -187,14 +187,14 @@ CANONICAL_METRIC_SEMANTIC_SPECS: Dict[str, Dict[str, Any]] = {
             "prior_gross_profit_margin"
         ],
         "positive_keywords": [
-            "gross margin", "gross profit margin", "gross profit",
+            "gross margin", "gross profit margin",
             "prior gross margin"
         ],
         "negative_keywords": [
             "operating margin", "net margin", "ebitda margin",
             "operating profit margin", "net profit margin"
         ],
-        "disallowed_units": [],
+        "disallowed_units": ["$", "usd", "inr", "eur", "gbp", "₹", "crores", "lakhs", "millions", "billions", "thousands"],
         "is_percentage_or_ratio": True,
     },
     "operating_margin": {
@@ -209,7 +209,7 @@ CANONICAL_METRIC_SEMANTIC_SPECS: Dict[str, Dict[str, Any]] = {
         "negative_keywords": [
             "gross margin", "gross profit margin", "net margin", "net profit margin"
         ],
-        "disallowed_units": [],
+        "disallowed_units": ["$", "usd", "inr", "eur", "gbp", "₹", "crores", "lakhs", "millions", "billions", "thousands"],
         "is_percentage_or_ratio": True,
     },
     "prior_operating_margin": {
@@ -222,7 +222,7 @@ CANONICAL_METRIC_SEMANTIC_SPECS: Dict[str, Dict[str, Any]] = {
         "negative_keywords": [
             "gross margin", "gross profit margin", "net margin", "net profit margin"
         ],
-        "disallowed_units": [],
+        "disallowed_units": ["$", "usd", "inr", "eur", "gbp", "₹", "crores", "lakhs", "millions", "billions", "thousands"],
         "is_percentage_or_ratio": True,
     },
     "operating_cash_flow": {
@@ -367,6 +367,63 @@ def validate_metric_semantics(target_key: str, item: Dict[str, Any]) -> bool:
             logger.debug("Semantic validation rejected total_debt candidate with investment context: '%s'", combined_ctx[:80])
             return False
 
+    # 5. Margin Level vs Delta & Range Guard:
+    # Ensure margin candidates are valid margin percentage rates (-100% to 100%), not monetary gross profit or deltas.
+    if target_key in {"gross_margin", "prior_gross_margin", "operating_margin", "prior_operating_margin"}:
+        val = item.get("value")
+        if isinstance(val, (int, float)):
+            if val > 100.0 or val < -100.0:
+                logger.debug("Semantic validation rejected margin candidate with out-of-range value %s for '%s'", val, target_key)
+                return False
+
+            # Check if value is actually a percentage-point delta / change rather than a margin level
+            delta_patterns = [
+                r"(?:dropped|fell|declined|decreased|compressed|down|reduced|contracted|narrowed)\s+(?:by\s+)?([0-9\.]+)\s*(?:percentage\s+points|pct\s+points|points|pts|%)",
+                r"([0-9\.]+)\s*(?:percentage\s+points|pct\s+points|points|pts)\s*(?:decrease|decline|drop|compression|reduction|contraction|increase|improvement|expansion)",
+                r"(?:decrease|decline|drop|compression|reduction|contraction|increase|improvement|expansion)\s+of\s+([0-9\.]+)\s*(?:percentage\s+points|pct\s+points|points|pts|%)",
+                r"(?:increased|grew|expanded|improved|rose|up)\s+(?:by\s+)?([0-9\.]+)\s*(?:percentage\s+points|pct\s+points|points|pts|%)",
+            ]
+            for pat in delta_patterns:
+                match = re.search(pat, combined_ctx, re.IGNORECASE)
+                if match:
+                    try:
+                        delta_num = float(match.group(1))
+                        # Match if absolute val is within small epsilon of delta_num (scale 0-100 or 0-1)
+                        if abs(abs(val) - delta_num) < 0.05 or abs(abs(val) - (delta_num / 100.0)) < 0.001:
+                            logger.debug(
+                                "Semantic validation rejected candidate for '%s': value %s is a delta/change (%s) rather than a margin level in '%s'",
+                                target_key, val, delta_num, combined_ctx[:80],
+                            )
+                            return False
+                    except (ValueError, TypeError):
+                        pass
+
+            # Additional guard: if evidence has "from X% to Y%", verify val matches one of those levels
+            # not the difference between them (which would be a delta)
+            from_to_patterns = [
+                r"from\s+([0-9\.]+)\s*%\s*(?:[a-z0-9\s,]+?)?to\s+([0-9\.]+)\s*%",
+                r"to\s+([0-9\.]+)\s*%\s*(?:[a-z0-9\s,]+?)?from\s+([0-9\.]+)\s*%",
+            ]
+            for ftp in from_to_patterns:
+                ft_match = re.search(ftp, combined_ctx, re.IGNORECASE)
+                if ft_match:
+                    try:
+                        level_a = float(ft_match.group(1))
+                        level_b = float(ft_match.group(2))
+                        computed_delta = abs(level_a - level_b)
+                        # If val closely matches the computed delta (not either level), it's a delta
+                        matches_a = abs(abs(val) - level_a) < 0.15 or abs(abs(val) - level_a / 100.0) < 0.002
+                        matches_b = abs(abs(val) - level_b) < 0.15 or abs(abs(val) - level_b / 100.0) < 0.002
+                        matches_delta = abs(abs(val) - computed_delta) < 0.15 or abs(abs(val) - computed_delta / 100.0) < 0.002
+                        if matches_delta and not matches_a and not matches_b:
+                            logger.debug(
+                                "Semantic validation rejected candidate for '%s': value %s matches delta of from/to range (%s→%s = delta %s) in '%s'",
+                                target_key, val, level_a, level_b, computed_delta, combined_ctx[:80],
+                            )
+                            return False
+                    except (ValueError, TypeError):
+                        pass
+
     return True
 
 
@@ -411,38 +468,70 @@ class RedFlagAgent(BaseAgent):
         """
         session_id = payload.get("session_id")
         user_id = (context or {}).get("user_id") or payload.get("user_id")
+
+        # Resolve document_ids and target primary document upfront
+        document_ids = payload.get("document_ids") or (
+            [payload["document_id"]] if payload.get("document_id") else None
+        )
+        if not document_ids and (context or {}).get("document_id"):
+            document_ids = [context["document_id"]]
+        if not document_ids and (context or {}).get("document_ids"):
+            document_ids = context["document_ids"]
+        primary_doc_id = document_ids[0] if document_ids else None
+
         company_name = payload.get("company_name") or payload.get("entity_name")
         if not company_name and session_id:
             try:
                 db_sync = get_sync_db()
-                doc_record = db_sync.documents.find_one({"session_id": session_id})
+                doc_query: Dict[str, Any] = {"session_id": session_id}
+                if primary_doc_id:
+                    doc_query["document_id"] = primary_doc_id
+                doc_record = db_sync.documents.find_one(doc_query)
                 if doc_record:
-                    fn = doc_record.get("filename", "")
-                    base = fn.split(".")[0]
-                    parts = [
-                        p
-                        for p in base.replace("_", " ").replace("-", " ").split()
-                        if p.lower()
-                        not in {
-                            "10k",
-                            "10q",
-                            "annual",
-                            "report",
-                            "filing",
-                            "2020",
-                            "2021",
-                            "2022",
-                            "2023",
-                            "2024",
-                            "2025",
-                            "2026",
-                            "pdf",
-                            "txt",
-                            "md",
-                        }
-                    ]
-                    if parts:
-                        company_name = " ".join(parts).title()
+                    # Prefer canonical document metadata first
+                    meta = doc_record.get("metadata") or {}
+                    company_name = (
+                        doc_record.get("company_name")
+                        or meta.get("company_name")
+                        or meta.get("entity_name")
+                        or meta.get("company")
+                    )
+                    # Check extracted_metrics for this specific document if not in document metadata
+                    if not company_name and primary_doc_id:
+                        em_rec = db_sync.extracted_metrics.find_one(
+                            {"session_id": session_id, "document_id": primary_doc_id}
+                        )
+                        if em_rec:
+                            company_name = em_rec.get("company_name") or em_rec.get("company")
+
+                    # If still not found, derive strictly from this specific document's filename
+                    if not company_name:
+                        fn = doc_record.get("filename", "")
+                        base = fn.split(".")[0]
+                        parts = [
+                            p
+                            for p in base.replace("_", " ").replace("-", " ").split()
+                            if p.lower()
+                            not in {
+                                "10k",
+                                "10q",
+                                "annual",
+                                "report",
+                                "filing",
+                                "2020",
+                                "2021",
+                                "2022",
+                                "2023",
+                                "2024",
+                                "2025",
+                                "2026",
+                                "pdf",
+                                "txt",
+                                "md",
+                            }
+                        ]
+                        if parts:
+                            company_name = " ".join(parts).title()
             except Exception:
                 pass
         if not company_name:
@@ -450,9 +539,6 @@ class RedFlagAgent(BaseAgent):
 
         metrics_input = payload.get("metrics") or payload.get("extracted_metrics")
         risk_focus = payload.get("risk_focus")
-        document_ids = payload.get("document_ids") or (
-            [payload["document_id"]] if payload.get("document_id") else None
-        )
 
         if not session_id or not user_id:
             raise NonRetryableAgentException(
@@ -481,7 +567,12 @@ class RedFlagAgent(BaseAgent):
             if not metrics_input and session_id:
                 try:
                     db_sync = get_sync_db()
-                    db_metrics = list(db_sync.extracted_metrics.find({"session_id": session_id}))
+                    m_query: Dict[str, Any] = {"session_id": session_id}
+                    if primary_doc_id:
+                        m_query["document_id"] = primary_doc_id
+                    elif document_ids:
+                        m_query["document_id"] = {"$in": document_ids}
+                    db_metrics = list(db_sync.extracted_metrics.find(m_query))
                     if db_metrics:
                         metrics_input = db_metrics
                 except Exception as m_exc:
@@ -545,6 +636,8 @@ class RedFlagAgent(BaseAgent):
             red_flag_res = RedFlagResult(
                 agent_name=self.name,
                 session_id=session_id,
+                user_id=user_id,
+                document_id=primary_doc_id,
                 company_name=company_name,
                 total_flags=len(sanitized_flags),
                 high_severity_count=high_count,
@@ -557,6 +650,7 @@ class RedFlagAgent(BaseAgent):
                     "total_analyzed": len(all_flags),
                     "deduplicated_count": len(sanitized_flags),
                     "document_ids": document_ids,
+                    "document_id": primary_doc_id,
                     "finbert_active": nlp_service.is_available,
                 },
             )
@@ -1447,10 +1541,36 @@ class RedFlagAgent(BaseAgent):
                             matching_items.append(item)
 
                 if had_candidate and not matching_items:
-                    # All candidates for this target key failed semantic validation
-                    rejected_keys.add(target_key)
-                    if not target_key.startswith("prior_"):
-                        rejected_keys.add(f"prior_{target_key}")
+                    # All candidates for this target key failed semantic validation.
+                    # Check if evidence snippet explicitly provides authentic margin levels (e.g. from X% to Y% or to Y% from X%).
+                    if target_key in {"gross_margin", "prior_gross_margin"}:
+                        for it in flat_items:
+                            ev_snip = str(it.get("evidence_snippet") or it.get("context_snippet") or "")
+                            if ev_snip:
+                                m1 = re.search(r"to\s+([0-9\.]+)\s*%\s*(?:[a-z0-9\s,]+?)?from\s+([0-9\.]+)\s*%", ev_snip, re.IGNORECASE)
+                                m2 = re.search(r"from\s+([0-9\.]+)\s*%\s*(?:[a-z0-9\s,]+?)?to\s+([0-9\.]+)\s*%", ev_snip, re.IGNORECASE)
+                                if m1 or m2:
+                                    prior_lvl = float(m1.group(2)) if m1 else float(m2.group(1))
+                                    curr_lvl = float(m1.group(1)) if m1 else float(m2.group(2))
+                                    raw_dict["gross_margin"] = curr_lvl
+                                    raw_dict["prior_gross_margin"] = prior_lvl
+                                    cids = it.get("source_chunk_ids") or ([it["chunk_id"]] if it.get("chunk_id") else [])
+                                    prov_info = {
+                                        "source_chunk_ids": cids,
+                                        "chunk_id": cids[0] if cids else None,
+                                        "page_number": it.get("page_number") or (it.get("page_numbers", [None])[0] if it.get("page_numbers") else None),
+                                        "section": it.get("section"),
+                                        "document_id": it.get("document_id"),
+                                        "document_filename": it.get("document_filename"),
+                                        "evidence_snippet": ev_snip,
+                                    }
+                                    provenance["gross_margin"] = prov_info
+                                    provenance["prior_gross_margin"] = prov_info
+                                    break
+                    if target_key not in raw_dict:
+                        rejected_keys.add(target_key)
+                        if not target_key.startswith("prior_"):
+                            rejected_keys.add(f"prior_{target_key}")
 
                 if matching_items:
                     def _sort_key(it: Dict[str, Any]) -> int:
@@ -1623,12 +1743,16 @@ Return ONLY a JSON object with schema:
                 data["document_id"] = document_id
             data["updated_at"] = datetime.now(timezone.utc)
 
+            upsert_filter: Dict[str, Any] = {"session_id": session_id}
+            if document_id:
+                upsert_filter["document_id"] = document_id
+
             db.red_flags.update_one(
-                {"session_id": session_id},
+                upsert_filter,
                 {"$set": data},
                 upsert=True,
             )
-            logger.info("Persisted red flags analysis result to MongoDB for session %s", session_id)
+            logger.info("Persisted red flags analysis result to MongoDB for session %s (doc: %s)", session_id, document_id)
         except Exception as exc:
             logger.warning("Non-fatal error persisting red flags to MongoDB: %s", exc)
 

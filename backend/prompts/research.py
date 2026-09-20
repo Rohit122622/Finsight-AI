@@ -60,7 +60,8 @@ def build_research_prompt(
 
                                      
     if context.metrics:
-        evidence_blocks.append("--- FINANCIAL METRICS ---")
+        evidence_blocks.append("--- CANONICAL PERSISTED FINANCIAL METRICS ---")
+        evidence_blocks.append("These are normalized, period-validated application values. For a requested metric and fiscal period, use these values over raw document-number formatting in retrieved chunks.")
         for m in context.metrics:
             ref_str = f" [Doc: {m.document_reference or 'N/A'}"
             if m.page_number:

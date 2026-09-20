@@ -5,6 +5,8 @@
 
 import { useState } from "react";
 import type { AnalysisReport } from "../types";
+import { downloadReportPdfApi, downloadReportLockedPdfApi, revealReportPasswordApi, retryReportEmailApi, listReportsApi } from "../api/analysis";
+import { LockedPdfPanel } from "./common/LockedPdfPanel";
 
 interface AnalysisReportViewerProps {
   reports: AnalysisReport[];
@@ -15,9 +17,61 @@ export function AnalysisReportViewer({ reports, isLoading }: AnalysisReportViewe
   const [selectedReportId, setSelectedReportId] = useState<string | null>(
     reports.length > 0 ? reports[0].report_id : null,
   );
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [isDownloadingLocked, setIsDownloadingLocked] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
 
   const activeReport =
     reports.find((r) => r.report_id === selectedReportId) || (reports.length > 0 ? reports[0] : null);
+
+  const handleDownload = async () => {
+    if (!activeReport) return;
+    setIsDownloading(true);
+    setDownloadError(null);
+    try {
+      const blob = await downloadReportPdfApi(activeReport.session_id, activeReport.report_id);
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `FinSentry_Report_${activeReport.session_id.slice(0, 8)}_${activeReport.report_id.slice(0, 8)}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (err: unknown) {
+      console.error("Failed to download report PDF:", err);
+      if (activeReport.download_url && activeReport.download_url.startsWith("http")) {
+        window.open(activeReport.download_url, "_blank");
+      } else {
+        setDownloadError("Failed to download PDF. Please try again.");
+      }
+    } finally {
+      setIsDownloading(false);
+    }
+  };
+
+  // Locked download → password-protected AES-256 PDF (encrypted bytes; matches email).
+  const handleDownloadLocked = async () => {
+    if (!activeReport) return;
+    setIsDownloadingLocked(true);
+    setDownloadError(null);
+    try {
+      const blob = await downloadReportLockedPdfApi(activeReport.session_id, activeReport.report_id);
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `FinSentry_Report_LOCKED_${activeReport.session_id.slice(0, 8)}_${activeReport.report_id.slice(0, 8)}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (err) {
+      console.error("Failed to download locked report PDF:", err);
+      setDownloadError("Failed to download the locked Report PDF.");
+    } finally {
+      setIsDownloadingLocked(false);
+    }
+  };
 
   const getSeverityBadge = (severity: string) => {
     switch (severity) {
@@ -51,7 +105,12 @@ export function AnalysisReportViewer({ reports, isLoading }: AnalysisReportViewe
 
   return (
     <div className="card" style={{ padding: "1.5rem" }}>
-      {}
+      {downloadError && (
+        <div style={{ padding: "0.75rem", marginBottom: "1rem", backgroundColor: "rgba(239, 68, 68, 0.1)", border: "1px solid var(--color-risk-500)", borderRadius: "0.375rem", color: "var(--color-risk-500)", fontSize: "0.8125rem" }}>
+          {downloadError}
+        </div>
+      )}
+
       {reports.length > 1 && (
         <div style={{ display: "flex", gap: "0.5rem", marginBottom: "1.25rem", overflowX: "auto" }}>
           {reports.map((r, idx) => (
@@ -69,7 +128,6 @@ export function AnalysisReportViewer({ reports, isLoading }: AnalysisReportViewe
 
       {activeReport && (
         <div>
-          {}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.25rem" }}>
             <div>
               <h2 style={{ fontSize: "1.25rem", fontWeight: 700, color: "var(--color-text-primary)" }}>
@@ -80,12 +138,35 @@ export function AnalysisReportViewer({ reports, isLoading }: AnalysisReportViewe
               </span>
             </div>
 
-            {}
-            <div
-              style={{
-                textAlign: "right",
-                padding: "0.5rem 1rem",
-                borderRadius: "0.5rem",
+            <div style={{ display: "flex", gap: "0.75rem", alignItems: "center" }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={isDownloading}
+                style={{
+                  fontSize: "0.75rem",
+                  padding: "0.5rem 0.875rem",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "0.375rem",
+                  color: "var(--color-brand-500, #10b981)",
+                  borderColor: "var(--color-border-subtle)",
+                }}
+                onClick={handleDownload}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+                <span>{isDownloading ? "Downloading..." : "Download PDF"}</span>
+              </button>
+
+              <div
+                style={{
+                  textAlign: "right",
+                  padding: "0.5rem 1rem",
+                  borderRadius: "0.5rem",
                 backgroundColor: "var(--color-bg-surface-alt)",
                 border: "1px solid var(--color-border-subtle)",
               }}
@@ -107,8 +188,29 @@ export function AnalysisReportViewer({ reports, isLoading }: AnalysisReportViewe
               >
                 {activeReport.risk_score} / 100
               </strong>
+              </div>
             </div>
           </div>
+
+          {/* Locked (encrypted) PDF controls: password reveal/copy, download, email status */}
+          <LockedPdfPanel
+            title="Report PDF"
+            locked={true}
+            passwordAvailable={activeReport.password_available ?? true}
+            emailStatus={activeReport.email_status ?? null}
+            downloading={isDownloadingLocked}
+            onDownload={handleDownloadLocked}
+            onRevealPassword={async () =>
+              (await revealReportPasswordApi(activeReport.session_id, activeReport.report_id)).password
+            }
+            onRetryEmail={async () => {
+              await retryReportEmailApi(activeReport.session_id, activeReport.report_id);
+            }}
+            onRefreshStatus={async () => {
+              const { reports: latest } = await listReportsApi(activeReport.session_id);
+              return latest.find((r) => r.report_id === activeReport.report_id)?.email_status ?? null;
+            }}
+          />
 
           {}
           {activeReport.executive_summary && (
@@ -179,10 +281,12 @@ export function AnalysisReportViewer({ reports, isLoading }: AnalysisReportViewe
             </div>
           )}
 
-          {}
-          {activeReport.sections && activeReport.sections.length > 0 && (
+          {/* Additional Analysis Sections (Executive Summary filtered to avoid duplication) */}
+          {activeReport.sections && activeReport.sections.filter((s) => s.title !== "Executive Summary").length > 0 && (
             <div style={{ marginBottom: "1.5rem" }}>
-              {activeReport.sections.map((sec, idx) => (
+              {activeReport.sections
+                .filter((s) => s.title !== "Executive Summary")
+                .map((sec, idx) => (
                 <div key={idx} style={{ marginBottom: "1.25rem" }}>
                   <h3 style={{ fontSize: "0.9375rem", fontWeight: 600, color: "var(--color-text-primary)", marginBottom: "0.375rem" }}>
                     {sec.title}

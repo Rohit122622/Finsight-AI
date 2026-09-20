@@ -22,6 +22,7 @@ from api.health import router as health_router
 from api.jobs import router as jobs_router
 from api.research import router as research_router
 from api.research_chat import router as research_chat_router
+from api.reports import router as reports_router
 from api.secure_upload import router as upload_router
 from api.sessions import router as sessions_router
 from api.websockets import router as websockets_router
@@ -62,6 +63,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     db = mongodb.get_db()
     await create_indexes(db)
+
+    # Warm up neural embedding model in thread to avoid blocking startup while preventing first-query cold start
+    import asyncio
+    from services.embedding_service import embedding_service
+    asyncio.create_task(asyncio.to_thread(embedding_service.preload_model))
+
     logger.info("Startup complete")
 
     yield
@@ -117,6 +124,11 @@ app.include_router(
     analysis_router,
     prefix="/api/v1/sessions/{session_id}",
     tags=["analysis"],
+)
+app.include_router(
+    reports_router,
+    prefix="/api/v1/sessions/{session_id}",
+    tags=["reports"],
 )
 app.include_router(jobs_router, prefix="/api/v1/jobs", tags=["jobs"])
 app.include_router(agents_router, prefix="/api/v1/agents", tags=["agents"])

@@ -1,0 +1,94 @@
+{# 
+FinSentry AI — Analyst-Style Financial Research Report Template
+Engine: Jinja2
+Purpose: Generates structured intermediate layout representation for ReportLab Platypus
+#}
+
+=== REPORT HEADER ===
+Title: {{ metadata.report_title }}
+Session ID: {{ metadata.session_id }}
+Generated: {{ metadata.generated_at.strftime('%B %d, %Y %H:%M UTC') }}
+Companies: {{ metadata.companies | join(', ') }}
+Version: {{ metadata.report_version }}
+
+=== SECTION 1: EXECUTIVE SUMMARY ===
+{% if executive_summary.narrative %}
+{{ executive_summary.narrative }}
+{% else %}
+This institutional financial due diligence report synthesizes audited findings and metrics extracted from corporate filings for {{ metadata.companies | join(', ') }}.
+Overall Risk Profile: {{ executive_summary.overall_risk_assessment }} (Composite Risk Score: {{ executive_summary.overall_risk_score }}/100).
+{% endif %}
+
+{% if executive_summary.key_strengths %}
+Key Financial Strengths:
+{% for s in executive_summary.key_strengths %}
+  - {{ s }}
+{% endfor %}
+{% endif %}
+
+{% if executive_summary.key_weaknesses %}
+Key Financial Vulnerabilities:
+{% for w in executive_summary.key_weaknesses %}
+  - {{ w }}
+{% endfor %}
+{% endif %}
+
+{% if executive_summary.major_red_flags_summary %}
+Forensic Red Flags Identified:
+{% for f in executive_summary.major_red_flags_summary %}
+  - {{ f }}
+{% endfor %}
+{% endif %}
+
+=== SECTION 2: KEY FINANCIALS ===
+Analyzed Companies: {{ key_financials.companies | join(', ') }}
+Reporting Periods: {{ key_financials.reporting_periods | join(', ') }}
+
+{% for row in key_financials.metrics %}
+{{ row.display_name }} ({{ row.category }}):
+  {% for val in row.values %}
+  - {{ val.company_name }} [{{ val.fiscal_period }}]: {{ val.formatted_value }}
+  {% endfor %}
+{% endfor %}
+
+=== SECTION 3: RED FLAGS ===
+{% if red_flags.is_empty_state %}
+{{ red_flags.empty_state_message }}
+{% else %}
+Risk Assessment: {{ red_flags.overall_assessment }}
+Composite Risk Score: {{ red_flags.composite_risk_score }} / 100
+Total Detected Flags: {{ red_flags.total_flags }} (High Severity: {{ red_flags.high_severity_count }})
+
+{% for item in red_flags.findings %}
+[{{ item.severity }}] {{ item.title }} ({{ item.company_name }})
+  Metric: {{ item.metric_name or 'N/A' }} | Change: {{ item.change_description or 'N/A' }}
+  Description: {{ item.description }}
+  Evidence: {{ item.evidence }}
+  {% if item.source_page %}Page: {{ item.source_page }}{% endif %}
+{% endfor %}
+{% endif %}
+
+=== SECTION 4: COMPANY COMPARISON ===
+{% if not comparison.is_available %}
+{{ comparison.unavailable_reason }}
+{% else %}
+Compared Peers: {{ comparison.compared_companies | join(' vs ') }}
+Periods: {{ comparison.fiscal_periods | join(', ') }}
+
+{% for m in comparison.metrics %}
+{{ m.display_name }} ({{ m.fiscal_period }}):
+  Peer Average: {{ m.peer_average if m.peer_average is not none else 'N/A' }}
+  Highest: {{ m.highest_company or 'N/A' }} ({{ m.highest_value if m.highest_value is not none else 'N/A' }})
+  Lowest: {{ m.lowest_company or 'N/A' }} ({{ m.lowest_value if m.lowest_value is not none else 'N/A' }})
+{% endfor %}
+{% endif %}
+
+=== SECTION 5: OUTLOOK ===
+{% if outlook.is_empty_state %}
+{{ outlook.empty_state_message }}
+{% else %}
+{% for o in outlook.findings %}
+Topic: {{ o.topic }} ({{ o.company_name or 'General' }})
+Finding: {{ o.observation }}
+{% endfor %}
+{% endif %}

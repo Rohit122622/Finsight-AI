@@ -419,10 +419,11 @@ class DocumentService:
             )
 
             chunks_data = []
-            for c in chunks:
+            embeddings = embedding_service.generate_embeddings_batch([c.text for c in chunks])
+            for index, c in enumerate(chunks):
                 c_dict = c.model_dump()
                 try:
-                    emb = embedding_service.generate_embedding(c.text)
+                    emb = embeddings[index] if index < len(embeddings) else embedding_service.generate_embedding(c.text)
                     c_dict["embedding"] = emb
                     if "metadata" not in c_dict or not isinstance(c_dict["metadata"], dict):
                         c_dict["metadata"] = {}
@@ -542,10 +543,11 @@ class DocumentService:
             )
 
             chunks_data = []
-            for c in chunks:
+            embeddings = embedding_service.generate_embeddings_batch([c.text for c in chunks])
+            for index, c in enumerate(chunks):
                 c_dict = c.model_dump()
                 try:
-                    emb = embedding_service.generate_embedding(c.text)
+                    emb = embeddings[index] if index < len(embeddings) else embedding_service.generate_embedding(c.text)
                     c_dict["embedding"] = emb
                     if "metadata" not in c_dict or not isinstance(c_dict["metadata"], dict):
                         c_dict["metadata"] = {}

@@ -147,7 +147,7 @@ class LLMService:
             # Parse structured chunks from prompt
             parsed_chunks: List[Dict[str, Any]] = []
             chunk_blocks = re.findall(
-                r'\[CHUNK_ID:\s*([^\s\|\]]+)\s*\|\s*PAGE:\s*(\d+)\s*\|\s*SECTION:\s*([^\|\]]+)[^\]]*\]\s*---\s*([\s\S]*?)(?=---\s*\[CHUNK_ID:|$)',
+                r'\[CHUNK_ID:\s*([^\s\|\]]+)\s*\|\s*PAGE:\s*(\d+)\s*\|\s*SECTION:\s*([^\|\]]+)[^\]]*\]\s*---\s*([\s\S]*?)(?=---\s*\[CHUNK_ID:|\nInstructions:\n|\nCRITICAL:|\nTarget Fields:|\nReturn ONLY)',
                 prompt,
             )
             if chunk_blocks:
@@ -182,14 +182,26 @@ class LLMService:
             elif "€" in all_text or "ifrs" in all_text.lower():
                 currency = "EUR"
 
-            # Detect reporting years dynamically
-            years_found = sorted(list({int(y) for y in re.findall(r'\b(20[12]\d)\b', all_text)}), reverse=True)
-            if years_found:
+            # Detect filing year from filename or chunks (use digit boundaries rather than \b to support underscores)
+            fn_match = re.search(r"(?<!\d)(20\d\d)(?!\d)", prompt)
+            filing_year = int(fn_match.group(1)) if fn_match else None
+
+            # Detect reporting years dynamically (rejecting future debt schedule years > filing_year and > 2026)
+            years_found = [
+                int(y) for y in re.findall(r'(?<!\d)(20[12]\d)(?!\d)', all_text)
+                if (not filing_year or int(y) <= filing_year) and int(y) <= 2026
+            ]
+            years_found = sorted(list(set(years_found)), reverse=True)
+            if filing_year:
+                rep_period = f"FY{filing_year}"
+                priors = [y for y in years_found if y < filing_year]
+                prior_period = f"FY{priors[0]}" if priors else f"FY{filing_year - 1}"
+            elif years_found:
                 rep_period = f"FY{years_found[0]}"
                 prior_period = f"FY{years_found[1]}" if len(years_found) > 1 else f"FY{years_found[0] - 1}"
             else:
-                rep_period = "FY2024"
-                prior_period = "FY2023"
+                rep_period = "FY2025"
+                prior_period = "FY2024"
 
             # Helper to find matching chunk for citation
             def _find_chunk_for_match(m_span_text: str, val_num: Optional[float] = None) -> Tuple[str, int]:

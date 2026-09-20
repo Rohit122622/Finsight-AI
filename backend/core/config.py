@@ -48,6 +48,7 @@ class Settings(BaseSettings):
                                                                    
     MONGODB_URI: str
     DATABASE_NAME: str = "finsentry"
+    STORAGE_LOCAL_DIR: str = str(_BACKEND_DIR / ".storage")
 
                                                                    
     JWT_SECRET_KEY: str
@@ -127,6 +128,24 @@ class Settings(BaseSettings):
     R2_BUCKET_NAME: str = "finsentry-documents"
     R2_ENDPOINT_URL: str = ""
     R2_REGION: str = "auto"
+
+    # ── Locked-PDF encryption (password-at-rest) ─────────────────────
+    # Optional dedicated key for encrypting per-report PDF passwords at rest.
+    # If empty, a key is deterministically derived from JWT_SECRET_KEY.
+    PDF_SECRET_KEY: str = ""
+
+    # ── SMTP / Email (backend-only; never exposed to frontend) ───────
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM_EMAIL: str = ""
+    SMTP_FROM_NAME: str = "FinSentry AI"
+    SMTP_USE_TLS: bool = True
+
+    def is_smtp_configured(self) -> bool:
+        """Return True only when the minimum SMTP settings are present."""
+        return bool(self.SMTP_HOST and self.SMTP_USERNAME and self.SMTP_PASSWORD)
 
                                                                    
     CLAMAV_HOST: str = "localhost"

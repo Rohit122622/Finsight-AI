@@ -6,9 +6,9 @@ current user from an ``Authorization: Bearer <token>`` header.
 """
 
 import logging
-from typing import Annotated
+from typing import Annotated, Optional
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
@@ -26,12 +26,13 @@ async def get_current_user(
         HTTPAuthorizationCredentials | None, Depends(bearer_scheme)
     ],
     db: Annotated[AsyncIOMotorDatabase, Depends(get_database)],
+    token: Annotated[Optional[str], Query(description="Optional query token for direct authenticated downloads")] = None,
 ) -> UserModel:
     """
     FastAPI dependency that resolves the authenticated user.
 
     Steps:
-        1. Extract the Bearer token from the Authorization header.
+        1. Extract the Bearer token from the Authorization header (or query param).
         2. Decode and verify the JWT (must be an ``access`` token).
         3. Load the user from MongoDB by the ``sub`` claim.
         4. Return the ``UserModel`` or raise 401.
@@ -42,16 +43,16 @@ async def get_current_user(
         async def me(user: UserModel = Depends(get_current_user)):
             ...
     """
-    if credentials is None:
-        logger.warning("Missing Authorization header")
+    raw_token = credentials.credentials if credentials else token
+    if not raw_token:
+        logger.warning("Missing Authorization header and token parameter")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    token = credentials.credentials
-    payload = verify_access_token(token)
+    payload = verify_access_token(raw_token)
 
     if payload is None:
         logger.warning("Invalid or expired access token")

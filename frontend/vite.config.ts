@@ -80,6 +80,8 @@ export default defineConfig(({ mode }) => {
     test: {
       environment: "node",
       globals: true,
+      // Vitest owns the unit tests under src/. Playwright owns e2e/ specs.
+      include: ["src/**/*.{test,spec}.{ts,tsx}"],
     },
   };
 });

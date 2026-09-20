@@ -184,16 +184,20 @@ async def delete_report(
 )
 async def get_session_red_flags_structured(
     session_id: str = Path(..., description="Research session ID"),
+    document_id: Optional[str] = Query(None, description="Filter red flags to a specific document"),
     current_user: UserModel = Depends(get_current_user),
     session: SessionModel = Depends(require_session_owner),
 ) -> Any:
     """
     Retrieve structured RedFlagResult with lifecycle status for the current session.
+    When document_id is provided, returns ONLY that document's red flags.
+    When absent and multiple documents exist, returns a per-document breakdown.
     Status: NOT_RUN | RUNNING | COMPLETED_WITH_FLAGS | COMPLETED_NO_FLAGS | FAILED
     """
     flags_data = await live_analysis_service.get_session_red_flags(
         user_id=str(current_user.id),
         session_id=session_id,
+        document_id=document_id,
     )
     return flags_data
 

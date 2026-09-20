@@ -1,15 +1,5 @@
-
-
-
-
-
-
-
-
-
-
 import { useEffect, useState, useCallback } from "react";
-import { useParams, useNavigate, useSearchParams } from "react-router-dom";
+import { useParams, useNavigate, useSearchParams, useLocation } from "react-router-dom";
 import { getSessionApi } from "../api/sessions";
 import { listDocumentsApi } from "../api/documents";
 import { listReportsApi, getLiveProgressApi } from "../api/analysis";
@@ -22,7 +12,23 @@ import { ResearchChat } from "../components/chat/ResearchChat";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import { extractErrorMessage } from "../utils/errors";
 import { AgentPipelineView } from "../components/agents/AgentPipelineView";
+import { CompanyComparisonViewer } from "../components/comparison/CompanyComparisonViewer";
+import { ExtractionViewer } from "../components/extraction/ExtractionViewer";
+import { RedFlagViewer } from "../components/redflag/RedFlagViewer";
+import { PerCompanyReports } from "../components/report/PerCompanyReports";
 import type { Session, DocumentItem, AnalysisReport, JobProgressEvent } from "../types";
+
+function IconExtraction() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+      <line x1="16" y1="13" x2="8" y2="13" />
+      <line x1="16" y1="17" x2="8" y2="17" />
+      <polyline points="10 9 9 9 8 9" />
+    </svg>
+  );
+}
 
 function IconArrowLeft() {
   return (
@@ -68,13 +74,37 @@ function IconReports() {
   );
 }
 
+function IconCompare() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M18 20V10" />
+      <path d="M12 20V4" />
+      <path d="M6 20v-6" />
+    </svg>
+  );
+}
+
+function IconFlag() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z" />
+      <line x1="4" y1="22" x2="4" y2="15" />
+    </svg>
+  );
+}
+
 export default function SessionDetail() {
   const { sessionId } = useParams<{ sessionId: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
 
+  const location = useLocation();
+  const pathEnd = location.pathname.split("/").pop();
   const tabParam = searchParams.get("tab");
-  const activeTab = tabParam === "documents" || tabParam === "reports" || tabParam === "overview" ? tabParam : "research";
+  const activeTab =
+    tabParam === "documents" || tabParam === "extraction" || tabParam === "reports" || tabParam === "overview" || tabParam === "comparison" || tabParam === "redflag"
+      ? tabParam
+      : (pathEnd === "documents" || pathEnd === "extraction" || pathEnd === "reports" || pathEnd === "comparison" || pathEnd === "redflag" ? pathEnd : "research");
 
   const [session, setSession] = useState<Session | null>(null);
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
@@ -201,7 +231,7 @@ export default function SessionDetail() {
     return () => clearInterval(interval);
   }, [sessionId, documents, loadDocuments, loadSession]);
 
-  const setTab = (tab: "overview" | "research" | "documents" | "reports") => {
+  const setTab = (tab: "overview" | "research" | "documents" | "extraction" | "comparison" | "redflag" | "reports") => {
     setSearchParams({ tab });
   };
 
@@ -240,7 +270,7 @@ export default function SessionDetail() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-      {}
+      {/* Top Session Bar */}
       <div
         style={{
           padding: "0.875rem 1.5rem",
@@ -279,7 +309,7 @@ export default function SessionDetail() {
           </div>
         </div>
 
-        {}
+        {/* Tab Navigation */}
         <div
           style={{
             display: "flex",
@@ -312,28 +342,6 @@ export default function SessionDetail() {
           </button>
 
           <button
-            onClick={() => setTab("research")}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "0.4rem",
-              padding: "0.35rem 0.85rem",
-              borderRadius: "6px",
-              fontSize: "0.8rem",
-              fontWeight: activeTab === "research" ? 600 : 500,
-              backgroundColor: activeTab === "research" ? "var(--bg-surface)" : "transparent",
-              color: activeTab === "research" ? "var(--brand-primary)" : "var(--text-secondary)",
-              border: "none",
-              cursor: "pointer",
-              boxShadow: activeTab === "research" ? "var(--card-shadow)" : "none",
-              transition: "all 0.15s ease",
-            }}
-          >
-            <IconChat />
-            <span>Research Agent</span>
-          </button>
-
-          <button
             onClick={() => setTab("documents")}
             style={{
               display: "flex",
@@ -352,7 +360,95 @@ export default function SessionDetail() {
             }}
           >
             <IconDocuments />
-            <span>Documents ({documents.length})</span>
+            <span>Document</span>
+          </button>
+
+          <button
+            onClick={() => setTab("extraction")}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "0.4rem",
+              padding: "0.35rem 0.85rem",
+              borderRadius: "6px",
+              fontSize: "0.8rem",
+              fontWeight: activeTab === "extraction" ? 600 : 500,
+              backgroundColor: activeTab === "extraction" ? "var(--bg-surface)" : "transparent",
+              color: activeTab === "extraction" ? "var(--brand-primary)" : "var(--text-secondary)",
+              border: "none",
+              cursor: "pointer",
+              boxShadow: activeTab === "extraction" ? "var(--card-shadow)" : "none",
+              transition: "all 0.15s ease",
+            }}
+          >
+            <IconExtraction />
+            <span>Extraction</span>
+          </button>
+
+          <button
+            onClick={() => setTab("comparison")}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "0.4rem",
+              padding: "0.35rem 0.85rem",
+              borderRadius: "6px",
+              fontSize: "0.8rem",
+              fontWeight: activeTab === "comparison" ? 600 : 500,
+              backgroundColor: activeTab === "comparison" ? "var(--bg-surface)" : "transparent",
+              color: activeTab === "comparison" ? "var(--brand-primary)" : "var(--text-secondary)",
+              border: "none",
+              cursor: "pointer",
+              boxShadow: activeTab === "comparison" ? "var(--card-shadow)" : "none",
+              transition: "all 0.15s ease",
+            }}
+          >
+            <IconCompare />
+            <span>Comparison</span>
+          </button>
+
+          <button
+            onClick={() => setTab("redflag")}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "0.4rem",
+              padding: "0.35rem 0.85rem",
+              borderRadius: "6px",
+              fontSize: "0.8rem",
+              fontWeight: activeTab === "redflag" ? 600 : 500,
+              backgroundColor: activeTab === "redflag" ? "var(--bg-surface)" : "transparent",
+              color: activeTab === "redflag" ? "var(--brand-primary)" : "var(--text-secondary)",
+              border: "none",
+              cursor: "pointer",
+              boxShadow: activeTab === "redflag" ? "var(--card-shadow)" : "none",
+              transition: "all 0.15s ease",
+            }}
+          >
+            <IconFlag />
+            <span>Red Flag</span>
+          </button>
+
+          <button
+            onClick={() => setTab("research")}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "0.4rem",
+              padding: "0.35rem 0.85rem",
+              borderRadius: "6px",
+              fontSize: "0.8rem",
+              fontWeight: activeTab === "research" ? 600 : 500,
+              backgroundColor: activeTab === "research" ? "var(--bg-surface)" : "transparent",
+              color: activeTab === "research" ? "var(--brand-primary)" : "var(--text-secondary)",
+              border: "none",
+              cursor: "pointer",
+              boxShadow: activeTab === "research" ? "var(--card-shadow)" : "none",
+              transition: "all 0.15s ease",
+            }}
+          >
+            <IconChat />
+            <span>Research</span>
           </button>
 
           <button
@@ -374,14 +470,12 @@ export default function SessionDetail() {
             }}
           >
             <IconReports />
-            <span>Audit Reports ({reports.length})</span>
+            <span>Report</span>
           </button>
         </div>
       </div>
 
-      {}
       <div style={{ flex: 1, minHeight: 0, overflowY: activeTab === "research" ? "hidden" : "auto", display: "flex", flexDirection: "column" }}>
-        {}
         {activeTab === "overview" && (
           <div style={{ padding: "2rem", maxWidth: "1200px", margin: "0 auto", width: "100%" }}>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "1.25rem", marginBottom: "2rem" }}>
@@ -423,10 +517,23 @@ export default function SessionDetail() {
             </div>
 
             <AgentPipelineView />
+
+            {/* Live multi-agent processing lives on the session dashboard (moved off the Report page). */}
+            <div style={{ marginTop: "1.5rem" }}>
+              <LiveAgentDashboard
+                sessionId={sessionId!}
+                isConnected={isConnected}
+                liveProgress={effectiveJobProgress}
+                agentEvents={agentEvents}
+                hasDocuments={documents.length > 0}
+                onAnalysisStarted={(jobId) => {
+                  if (jobId) setActiveJobId(jobId);
+                }}
+              />
+            </div>
           </div>
         )}
 
-        {}
         {activeTab === "research" && (
           <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
             <ErrorBoundary>
@@ -435,7 +542,6 @@ export default function SessionDetail() {
           </div>
         )}
 
-        {}
         {activeTab === "documents" && (
           <div style={{ padding: "2rem", maxWidth: "1200px", margin: "0 auto", width: "100%", display: "flex", flexDirection: "column", gap: "2rem" }}>
             <DocumentUploadZone
@@ -460,20 +566,44 @@ export default function SessionDetail() {
           </div>
         )}
 
-        {}
+        {activeTab === "extraction" && (
+          <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+            <ExtractionViewer
+              sessionId={sessionId!}
+              documents={documents}
+            />
+          </div>
+        )}
+
+        {activeTab === "comparison" && (
+          <div style={{ padding: "2rem", maxWidth: "1200px", margin: "0 auto", width: "100%", display: "flex", flexDirection: "column", gap: "2rem" }}>
+            <CompanyComparisonViewer
+              sessionId={sessionId!}
+              documents={documents}
+            />
+          </div>
+        )}
+
+        {activeTab === "redflag" && (
+          <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+            <RedFlagViewer
+              sessionId={sessionId!}
+              documents={documents}
+            />
+          </div>
+        )}
+
         {activeTab === "reports" && (
           <div style={{ padding: "2rem", maxWidth: "1200px", margin: "0 auto", width: "100%", display: "flex", flexDirection: "column", gap: "2rem" }}>
-            <LiveAgentDashboard
-              sessionId={sessionId!}
-              isConnected={isConnected}
-              liveProgress={effectiveJobProgress}
-              agentEvents={agentEvents}
-              hasDocuments={documents.length > 0}
-              onAnalysisStarted={(jobId) => {
-                if (jobId) setActiveJobId(jobId);
-              }}
-            />
-            <AnalysisReportViewer reports={reports} isLoading={isLoadingReports} />
+            {/* Per-company (individual) reports */}
+            <PerCompanyReports sessionId={sessionId!} documents={documents} />
+            {/* Combined session report: synthesis + Download PDF / Locked / email (unchanged) */}
+            <div>
+              <h2 style={{ fontSize: "1.1rem", fontWeight: 700, color: "var(--text-primary)", marginBottom: "0.75rem" }}>
+                Combined Session Report
+              </h2>
+              <AnalysisReportViewer reports={reports} isLoading={isLoadingReports} />
+            </div>
           </div>
         )}
       </div>

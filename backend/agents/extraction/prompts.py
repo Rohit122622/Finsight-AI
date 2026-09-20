@@ -27,19 +27,20 @@ CRITICAL EXTRACTION RULES:
    - Populate `multi_year_table` mapping each fiscal year to its metrics.
    - If YoY change is reported or calculable, include `yoy_change_percent`.
 5. STRICT ANTI-MISCLASSIFICATION RULES:
-   - REVENUE: Must ONLY be consolidated total net sales / total revenue / revenue from operations. NEVER extract distribution channel percentages (e.g. 40%, 60%), channel mix, segment percentages, customer concentration, or regional share as revenue.
+   - REVENUE: Must ONLY be consolidated total net sales / total revenue / revenue from operations LEVEL value. NEVER extract distribution channel percentages (e.g. 40%, 60%), channel mix, segment percentages, customer concentration, regional share, page numbers, notes, or unrelated small numbers (e.g. 40.0) as revenue.
    - TOTAL DEBT: Must ONLY be actual borrowings, debt obligations, long-term and short-term debt (liabilities). NEVER extract "debt investments", "investment in debt securities", "marketable securities", or other asset investments as total_debt.
-   - GROSS MARGIN / OPERATING MARGIN: Extract the ACTUAL current margin percentage level (e.g. 22.6%), NEVER extract the percentage-point change/delta (e.g. 11.4 percentage points) as the margin value.
+   - GROSS MARGIN / OPERATING MARGIN: Extract the ACTUAL current margin percentage level (e.g. 22.6%, 46.2%). NEVER extract the percentage-point change/delta (e.g. 11.4 percentage points) as the margin value. NEVER extract monetary dollar amounts (e.g. 488002.5) or gross profit in currency as gross_margin.
+   - CANONICAL EPS: 'eps' must ALWAYS be canonical DILUTED Earnings Per Share (e.g. $7.42). NEVER extract Basic EPS (e.g. $7.46) as 'eps' when Diluted EPS is reported. If both Basic and Diluted EPS appear, you MUST select Diluted EPS.
 6. TERMINOLOGY & MULTI-JURISDICTION SUPPORT:
    - US 10-K: "Total Net Sales", "Revenue", "Gross Profit", "Operating Income", "Net Income (Loss)", "Diluted EPS", "Total Debt", "Stockholders' Equity".
    - Indian Annual Reports (Ind AS / Schedule III): "Revenue from Operations", "Total Income", "Profit After Tax (PAT)", "Profit for the year", "Basic/Diluted EPS (₹)", "Borrowings (Current + Non-Current)", "Total Equity / Other Equity", "Statement of Profit and Loss".
    - Consolidated vs Standalone: Prefer Consolidated figures when available; if only Standalone is present, extract Standalone figures and note filing_type.
 7. MANDATORY TARGET METRICS:
-   - revenue (Total revenue / Net sales / Revenue from operations — NOT channel percentages)
+   - revenue (Consolidated total revenue / Net sales / Revenue from operations LEVEL — NOT channel percentages, deltas, or small scalar numbers)
    - net_income (Net income / Net loss / PAT)
-   - gross_margin (Gross margin % level — NOT margin delta/change)
+   - gross_margin (Gross margin % level — NOT margin delta/change or dollar amounts)
    - debt_to_equity (Total debt / Total equity ratio)
-   - eps (Diluted earnings per share / Basic earnings per share)
+   - eps (Canonical Diluted Earnings Per Share — NEVER Basic EPS when Diluted EPS is available)
    - operating_cash_flow (Net cash provided by / used in operating activities)
    - total_debt (Total borrowings / short-term + long-term debt — NOT debt investments)
    - total_equity (Total stockholders' / shareholders' equity / net worth)
@@ -94,59 +95,38 @@ Return ONLY a valid JSON object with the following schema:
   "filing_type": "US 10-K | Indian Annual Report (Ind AS) | Financial Statement",
   "reporting_currency": "USD | INR | EUR | etc.",
   "reporting_scale": "millions | thousands | crores | lakhs | units",
-  "reporting_period": "FY2024",
-  "prior_period": "FY2023",
+  "reporting_period": "<CURRENT_FISCAL_YEAR>",
+  "prior_period": "<PRIOR_FISCAL_YEAR>",
   "metrics": [
     {{
-      "metric_name": "revenue",
-      "display_name": "Total Net Sales",
-      "value": 391035.0,
-      "prior_value": 383285.0,
-      "unit": "USD Millions",
-      "currency": "USD",
-      "period": "FY2024",
-      "prior_period": "FY2023",
-      "yoy_change_percent": 2.02,
-      "source_chunk_ids": ["doc_1_chunk_4"],
-      "page_numbers": [32],
-      "evidence_snippet": "Total net sales: $391,035 million in 2024 compared to $383,285 million in 2023",
-      "derivation_formula": null
-    }},
-    {{
-      "metric_name": "debt_to_equity",
-      "display_name": "Debt to Equity Ratio",
-      "value": 1.45,
-      "prior_value": 1.20,
-      "unit": "Ratio",
-      "currency": null,
-      "period": "FY2024",
-      "prior_period": "FY2023",
-      "yoy_change_percent": 20.8,
-      "source_chunk_ids": ["doc_1_chunk_8", "doc_1_chunk_12"],
-      "page_numbers": [34, 38],
-      "evidence_snippet": "Total debt: $106,629M, Total shareholders equity: $73,524M",
-      "derivation_formula": "total_debt (106629) / total_equity (73524)"
+      "metric_name": "<METRIC_KEY>",
+      "display_name": "<Human Readable Name>",
+      "value": "<EXTRACTED_CURRENT_VALUE_OR_NULL>",
+      "prior_value": "<EXTRACTED_PRIOR_VALUE_OR_NULL>",
+      "unit": "USD Millions | % | Ratio | etc.",
+      "currency": "USD | INR | null",
+      "period": "<CURRENT_FISCAL_YEAR>",
+      "prior_period": "<PRIOR_FISCAL_YEAR>",
+      "yoy_change_percent": "<CALCULATED_OR_NULL>",
+      "source_chunk_ids": ["<EXACT_CHUNK_ID_FROM_HEADERS>"],
+      "page_numbers": ["<PAGE_NUMBER>"],
+      "evidence_snippet": "<VERBATIM_TEXT_FROM_DOCUMENT>",
+      "derivation_formula": "<FORMULA_OR_NULL>"
     }}
   ],
   "multi_year_table": {{
-    "FY2024": {{
-      "revenue": 391035.0,
-      "net_income": 93736.0,
-      "gross_margin": 46.2,
-      "total_debt": 106629.0,
-      "total_equity": 73524.0,
-      "eps": 6.08
+    "<FISCAL_YEAR_1>": {{
+      "<metric_key>": "<value_or_null>"
     }},
-    "FY2023": {{
-      "revenue": 383285.0,
-      "net_income": 96995.0,
-      "gross_margin": 44.1,
-      "total_debt": 111088.0,
-      "total_equity": 62146.0,
-      "eps": 6.13
+    "<FISCAL_YEAR_2>": {{
+      "<metric_key>": "<value_or_null>"
     }}
   }}
-}}"""
+}}
+
+CRITICAL: Extract ONLY values that appear in the Financial Document Context above.
+If a metric is not present in the document, set its value to null.
+Do NOT use values from these schema examples as actual extracted data."""
 
 
 def build_corrective_retry_prompt(

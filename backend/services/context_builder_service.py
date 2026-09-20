@@ -42,6 +42,8 @@ from schemas.retrieval import (
 )
 from services.query_understanding_service import query_understanding_service
 from services.retrieval_service import retrieval_service
+from database.connection import mongodb
+from utils.company_resolution import is_company_match
 
 logger = logging.getLogger(__name__)
 
@@ -147,15 +149,83 @@ class ContextBuilderService:
                 raw_chunks = []
 
                                                             
+        # Auto-load session structured artifacts if not explicitly provided
+        if not financial_metrics and not red_flags and not comparisons:
+            auto_metrics, auto_flags, auto_comps = await self._load_session_artifacts(
+                session_id=session_id, user_id=user_id, qu_result=qu_result
+            )
+            financial_metrics = financial_metrics or auto_metrics
+            red_flags = red_flags or auto_flags
+            comparisons = comparisons or auto_comps
+
         doc_evidence = self._process_document_chunks(raw_chunks or [], session_id, user_id)
         doc_evidence = self._rank_documents(doc_evidence, qu_result)
 
-                                                             
-        metrics_evidence = self._process_metrics(financial_metrics or [], qu_result)
+        # Strict Research Isolation: Resolve canonical document IDs for target company
+        target_doc_ids: Optional[Set[str]] = None
+        target_company_name: Optional[str] = None
+        if qu_result and qu_result.entities and len(qu_result.entities) == 1:
+            target_company_name = qu_result.entities[0]
+            try:
+                db = mongodb.get_db()
+                docs = await db.documents.find(
+                    {"session_id": session_id, "user_id": user_id},
+                    {"document_id": 1, "filename": 1, "company_name": 1, "ticker": 1},
+                ).to_list(length=100)
+                if not docs:
+                    docs = await db.extracted_metrics.find(
+                        {"session_id": session_id, "user_id": user_id},
+                        {"document_id": 1, "company_name": 1, "document_filename": 1},
+                    ).to_list(length=100)
+                matched_ids = {
+                    d["document_id"] for d in docs
+                    if is_company_match(target_company_name, d) and d.get("document_id")
+                }
+                if matched_ids:
+                    target_doc_ids = matched_ids
+            except Exception as e_res:
+                logger.debug("Entity isolation lookup notice: %s", e_res)
 
-                                                    
+        if target_doc_ids:
+            doc_evidence = [d for d in doc_evidence if not getattr(d, "document_id", None) or d.document_id in target_doc_ids]
+            if financial_metrics:
+                financial_metrics = [
+                    m for m in financial_metrics
+                    if not (getattr(m, "document_reference", None) or getattr(m, "document_id", None))
+                    or (getattr(m, "document_reference", None) or getattr(m, "document_id", None)) in target_doc_ids
+                ]
+            if red_flags:
+                red_flags = [
+                    rf for rf in red_flags
+                    if not (getattr(rf, "source_reference", None) or getattr(rf, "document_id", None))
+                    or (getattr(rf, "source_reference", None) or getattr(rf, "document_id", None)) in target_doc_ids
+                ]
+
+        metrics_evidence = self._process_metrics(financial_metrics or [], qu_result)
         red_flag_evidence = self._process_red_flags(red_flags or [])
         comparison_evidence = self._process_comparisons(comparisons or [])
+
+        context_doc_set = set()
+        for d in (doc_evidence or []):
+            if getattr(d, "document_id", None):
+                context_doc_set.add(d.document_id)
+        for m in (metrics_evidence or []):
+            doc_ref = getattr(m, "document_reference", None) or getattr(m, "document_id", None)
+            if doc_ref:
+                context_doc_set.add(doc_ref)
+        for rf in (red_flag_evidence or []):
+            src_ref = getattr(rf, "source_reference", None) or getattr(rf, "document_id", None)
+            if src_ref:
+                context_doc_set.add(src_ref)
+
+        context_document_ids = sorted(list(context_doc_set))
+
+        logger.info(
+            "RESEARCH_ISOLATION: target_company=%s, target_document_ids=%s, context_document_ids=%s",
+            target_company_name or "ALL",
+            sorted(list(target_doc_ids)) if target_doc_ids else "ALL",
+            context_document_ids,
+        )
 
                                                           
         history_evidence = self._process_chat_history(chat_history or [], cfg.max_history_messages)
@@ -365,7 +435,6 @@ class ContextBuilderService:
         return processed
 
                                                                        
-
     def _rank_documents(
         self,
         docs: List[DocumentEvidence],
@@ -373,6 +442,7 @@ class ContextBuilderService:
     ) -> List[DocumentEvidence]:
         """
         Rank candidate documents using retrieval score and query understanding signals:
+        - Target entity match bonus (+0.5 for filename, +0.3 for text)
         - Metric presence bonus (+0.1)
         - Temporal presence bonus (+0.05)
         - Suggested section match bonus (+0.1)
@@ -386,24 +456,39 @@ class ContextBuilderService:
         target_metrics = [m.lower() for m in qu_result.financial_signals.metrics]
         target_years = [str(y) for y in qu_result.temporal_signals.years]
         suggested_section = qu_result.retrieval_hints.get("suggested_section", "").lower().replace("_", " ")
+        target_entities = [e.lower() for e in qu_result.entities] if qu_result.entities else []
 
         def compute_ranking_score(doc: DocumentEvidence) -> float:
             base_score = doc.score
             text_lower = doc.source_text.lower()
+            filename_lower = (doc.document_filename or "").lower()
 
-                          
+            if target_entities:
+                for ent in target_entities:
+                    ent_clean = ent.strip()
+                    if not ent_clean:
+                        continue
+                    words = [
+                        w for w in re.split(r"[\s\-]+", ent_clean)
+                        if w and w not in {"&", "and", "the", "inc", "corp", "co", "ltd", "llc", "plc", "group"}
+                    ]
+                    if ent_clean in filename_lower or (words and all(w in filename_lower for w in words)):
+                        base_score += 0.5
+                        break
+                    if ent_clean in text_lower or (len(words) >= 2 and all(w in text_lower for w in words)):
+                        base_score += 0.3
+                        break
+
             for m in target_metrics:
                 if m in text_lower:
                     base_score += 0.1
                     break
 
-                            
             for y in target_years:
                 if y in text_lower:
                     base_score += 0.05
                     break
 
-                           
             if suggested_section and doc.section:
                 sec_lower = doc.section.lower().replace("_", " ")
                 if suggested_section in sec_lower or sec_lower in suggested_section:
@@ -412,6 +497,155 @@ class ContextBuilderService:
             return base_score
 
         return sorted(docs, key=compute_ranking_score, reverse=True)
+
+    async def _load_session_artifacts(
+        self,
+        session_id: str,
+        user_id: str,
+        qu_result: Optional[QueryUnderstandingResult] = None,
+    ) -> Tuple[List[MetricEvidence], List[RedFlagEvidence], List[ComparisonEvidence]]:
+        """
+        Query MongoDB for extracted metrics, red flags, and comparison results for this session.
+        Respects entity filtering when entities are present in query understanding.
+        """
+        import uuid
+        metrics: List[MetricEvidence] = []
+        red_flags: List[RedFlagEvidence] = []
+        comparisons: List[ComparisonEvidence] = []
+
+        try:
+            from database.connection import mongodb
+            db = mongodb.get_db()
+
+            from utils.company_resolution import is_company_match
+
+            # Pre-fetch session documents map for fallback company matching
+            session_docs_list = await db.documents.find(
+                {"session_id": session_id, "user_id": user_id},
+                {"document_id": 1, "filename": 1, "company_name": 1, "ticker": 1},
+            ).to_list(length=100)
+            doc_meta_map = {d.get("document_id"): d for d in session_docs_list if d.get("document_id")}
+
+            # 1. Extracted Metrics (scoped strictly by session_id and user_id)
+            cursor_m = db.extracted_metrics.find({"session_id": session_id, "user_id": user_id})
+            docs_m = await cursor_m.to_list(length=200)
+            for doc in docs_m:
+                doc_id = doc.get("document_id", "")
+                company = doc.get("company_name", "")
+                doc_metrics = doc.get("metrics", [])
+
+                # Merge document metadata if present
+                doc_lookup = dict(doc)
+                if doc_id in doc_meta_map:
+                    for k, v in doc_meta_map[doc_id].items():
+                        if k not in doc_lookup or not doc_lookup[k]:
+                            doc_lookup[k] = v
+
+                if qu_result and qu_result.entities:
+                    is_match = any(is_company_match(ent, doc_lookup) for ent in qu_result.entities)
+                    if not is_match:
+                        continue
+
+                # multi_year_data is the canonical extraction representation:
+                # it contains the normalized number keyed by the validated
+                # fiscal period. Keep source metric metadata for citations.
+                metadata_by_metric = {
+                    m.get("metric_name"): m for m in doc_metrics if m.get("metric_name")
+                }
+                canonical_years = doc.get("multi_year_data") or {}
+                if isinstance(canonical_years, dict) and canonical_years:
+                    for period, year_metrics in canonical_years.items():
+                        if not isinstance(year_metrics, dict):
+                            continue
+                        for metric_name, val in year_metrics.items():
+                            if val is None or str(val).strip() == "" or str(val).lower() in {"null", "not available", "none"}:
+                                continue
+                            source = metadata_by_metric.get(metric_name, {})
+                            metrics.append(
+                                MetricEvidence(
+                                    document_reference=doc_id,
+                                    metric_name=metric_name,
+                                    value=val,
+                                    period=period,
+                                    unit_or_currency=source.get("unit") or source.get("currency"),
+                                    confidence=source.get("confidence", 0.95),
+                                    source_chunk_id=source.get("source_chunk_id") or (source.get("source_chunk_ids") or [None])[0],
+                                    page_number=source.get("page_number"),
+                                    category=ContextCategory.SOURCE_EVIDENCE,
+                                    source_type=ContextSourceType.FINANCIAL_METRIC,
+                                )
+                            )
+                else:
+                    for m in doc_metrics:
+                        val = m.get("value")
+                        if val is None or str(val).strip() == "" or str(val).lower() in {"null", "not available", "none"}:
+                            continue
+                        metrics.append(
+                            MetricEvidence(
+                                document_reference=doc_id,
+                                metric_name=m.get("metric_name", ""),
+                                value=val,
+                                period=m.get("period"),
+                                unit_or_currency=m.get("unit") or m.get("currency"),
+                                confidence=m.get("confidence", 0.95),
+                                source_chunk_id=m.get("source_chunk_id"),
+                                page_number=m.get("page_number"),
+                                category=ContextCategory.SOURCE_EVIDENCE,
+                                source_type=ContextSourceType.FINANCIAL_METRIC,
+                            )
+                        )
+
+            # 2. Red Flags (scoped strictly by session_id and user_id)
+            cursor_rf = db.red_flags.find({"session_id": session_id, "user_id": user_id})
+            docs_rf = await cursor_rf.to_list(length=200)
+            for doc in docs_rf:
+                doc_id = doc.get("document_id", "")
+                company = doc.get("company_name", "")
+                flags = doc.get("flags", [])
+
+                if qu_result and qu_result.entities:
+                    is_match = any(is_company_match(ent, doc) for ent in qu_result.entities)
+                    if not is_match:
+                        continue
+
+                for rf in flags:
+                    red_flags.append(
+                        RedFlagEvidence(
+                            flag_id=rf.get("flag_id", str(uuid.uuid4())),
+                            title=rf.get("title", ""),
+                            description=rf.get("description", ""),
+                            severity=rf.get("severity", "MEDIUM"),
+                            category=ContextCategory.SOURCE_EVIDENCE,
+                            source_type=ContextSourceType.RED_FLAG,
+                            document_id=doc_id,
+                            company_name=company,
+                        )
+                    )
+
+            # 3. Comparison Results (scoped strictly by session_id and user_id)
+            cursor_cr = db.comparison_results.find({"session_id": session_id, "user_id": user_id})
+            docs_cr = await cursor_cr.to_list(length=50)
+            for doc in docs_cr:
+                comp_data = doc.get("comparison", {})
+                side_by_side = comp_data.get("side_by_side", [])
+                for item in side_by_side:
+                    comparisons.append(
+                        ComparisonEvidence(
+                            metric_name=item.get("metric_name", ""),
+                            base_period=str(item.get("period", "")),
+                            target_period=str(item.get("period", "")),
+                            base_value=str(item.get("values", {}).get(item.get("base_company", ""), "")),
+                            target_value=str(item.get("values", {}).get(item.get("target_company", ""), "")),
+                            difference=str(item.get("variance", "")),
+                            percentage_change=str(item.get("variance_pct", "")),
+                            category=ContextCategory.SOURCE_EVIDENCE,
+                            source_type=ContextSourceType.COMPARISON,
+                        )
+                    )
+        except Exception as exc:
+            logger.warning("Error auto-loading session artifacts in context builder: %s", exc)
+
+        return metrics, red_flags, comparisons
 
                                                                        
 

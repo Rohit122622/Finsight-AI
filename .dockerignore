@@ -35,6 +35,13 @@ build
 coverage
 frontend/dist
 
+# Local runtime data (recreated at runtime; keep build context lean)
+.storage
+backend/.storage
+uploads
+backend/uploads
+kpi_probe_history.jsonl
+
 # Documentation (not needed in container)
 docs
 *.md

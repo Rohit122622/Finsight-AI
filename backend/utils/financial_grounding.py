@@ -230,7 +230,7 @@ def extract_financial_figures(text: str) -> List[FinancialFigure]:
         # Skip unformatted standalone plain numbers unless explicitly currency, percent, scale, negative bracket, comma-formatted, or fiscal year
         if not curr and not is_pct and not parsed_scale and not (neg_open == "(" and neg_close == ")") and "," not in num_str and not is_yr:
             # Allow decimal metrics like EPS (e.g. 7.46, 6.11) only if near EPS or per-share context
-            if "." in num_str and any(w in pre_context for w in ["eps", "share", "per"]):
+            if "." in num_str and any(w in pre_context for w in ["eps", "share", "per", "dilut", "basic", "earning"]):
                 pass
             else:
                 continue

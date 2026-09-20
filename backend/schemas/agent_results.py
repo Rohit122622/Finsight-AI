@@ -43,6 +43,8 @@ class ExtractionMetricItem(BaseModel):
     display_name: Optional[str] = None
     unit: Optional[str] = None
     currency: Optional[str] = None
+    source_unit: Optional[str] = None
+    source_scale: Optional[str] = None
     period: Optional[str] = None
     prior_period: Optional[str] = None
     yoy_change_percent: Optional[float] = None
@@ -68,6 +70,9 @@ class ExtractionResult(BaseAgentOutput):
     session_id: str
     document_id: Optional[str] = None
     document_filename: Optional[str] = None
+    company_name: Optional[str] = None
+    company: Optional[str] = None
+    ticker: Optional[str] = None
     filing_type: Optional[str] = None
     reporting_currency: Optional[str] = None
     reporting_scale: Optional[str] = None

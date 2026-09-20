@@ -148,3 +148,17 @@ class StorageServiceException(AppException):
 
     def __init__(self, message: str = "Storage service operation failed.") -> None:
         super().__init__(message)
+
+
+class ReportNotFoundException(AppException):
+    """Raised when an analytical report is not found."""
+
+    def __init__(self, message: str = "Report was not found.") -> None:
+        super().__init__(message)
+
+
+class UnauthorizedReportAccessException(AppException):
+    """Raised when a user attempts to access a report they do not own."""
+
+    def __init__(self, message: str = "You do not have permission to access this report.") -> None:
+        super().__init__(message)

@@ -186,6 +186,12 @@ async def create_indexes(db: AsyncIOMotorDatabase) -> None:
         logger.info("Ensured index: idx_red_flags_document_id on red_flags.document_id")
 
         await db.red_flags.create_index(
+            [("session_id", ASCENDING), ("document_id", ASCENDING)],
+            name="idx_red_flags_session_document",
+        )
+        logger.info("Ensured index: idx_red_flags_session_document on red_flags(session_id, document_id)")
+
+        await db.red_flags.create_index(
             [("session_id", ASCENDING), ("created_at", DESCENDING)],
             name="idx_red_flags_session_created",
         )
@@ -301,6 +307,55 @@ async def create_indexes(db: AsyncIOMotorDatabase) -> None:
             name="idx_research_traces_user_id",
         )
         logger.info("Ensured indexes on research_traces")
+
+        # ------------------------------------------------------------------
+        # Collection: comparison_results (Multi-company comparison cache)
+        # ------------------------------------------------------------------
+        await db.comparison_results.create_index(
+            [("session_id", ASCENDING), ("document_ids_hash", ASCENDING)],
+            unique=True,
+            name="idx_comparison_results_session_hash_unique",
+        )
+        logger.info(
+            "Ensured index: idx_comparison_results_session_hash_unique on "
+            "comparison_results(session_id, document_ids_hash)"
+        )
+
+        await db.comparison_results.create_index(
+            [("session_id", ASCENDING)],
+            name="idx_comparison_results_session_id",
+        )
+        logger.info("Ensured index: idx_comparison_results_session_id on comparison_results.session_id")
+
+        await db.comparison_results.create_index(
+            [("user_id", ASCENDING)],
+            name="idx_comparison_results_user_id",
+        )
+        logger.info("Ensured index: idx_comparison_results_user_id on comparison_results.user_id")
+
+        # ------------------------------------------------------------------
+        # Collection: reports (Authoritative Report Agent records)
+        # ------------------------------------------------------------------
+        await db.reports.create_index(
+            [("session_id", ASCENDING), ("report_id", ASCENDING)],
+            unique=True,
+            name="idx_reports_session_report_unique",
+        )
+        logger.info("Ensured index: idx_reports_session_report_unique on reports(session_id, report_id)")
+
+        await db.reports.create_index(
+            [("session_id", ASCENDING)],
+            name="idx_reports_session_id",
+        )
+        await db.reports.create_index(
+            [("user_id", ASCENDING)],
+            name="idx_reports_user_id",
+        )
+        await db.reports.create_index(
+            [("session_id", ASCENDING), ("created_at", DESCENDING)],
+            name="idx_reports_session_created",
+        )
+        logger.info("Ensured indexes on reports collection")
 
         # ------------------------------------------------------------------
         # MongoDB Atlas Vector Search Index Definition
