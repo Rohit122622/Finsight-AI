@@ -15,7 +15,9 @@ Evaluates ResearchAgent on authentic corporate distress filings covering:
 
 import asyncio
 import logging
+import math
 import os
+import re
 import sys
 from pathlib import Path
 from bson import ObjectId
@@ -35,6 +37,42 @@ from agents.research.research_agent import research_agent
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
+
+
+def _extract_numeric_values(text: str) -> list:
+    """Extract all numeric tokens (optional thousands separators / decimals) from text."""
+    values = []
+    for token in re.findall(r"\d[\d,]*(?:\.\d+)?", text):
+        try:
+            values.append(float(token.replace(",", "")))
+        except ValueError:
+            continue
+    return values
+
+
+def _answer_contains_term(answer: str, term: str) -> bool:
+    """
+    Validate that an expected term is present in the research answer.
+
+    Numeric terms (e.g. "5,344.7") are validated by VALUE, not by exact text:
+    the answer must contain a number equal to the reference within a small
+    tolerance. This accepts every correct representation of the same fact —
+    "5,344.7", "5,344.7 million", or the appropriately rounded "5,345" — while
+    still rejecting a wrong number. Non-numeric terms fall back to a
+    case-insensitive substring match.
+    """
+    normalized = term.replace(",", "").strip()
+    try:
+        expected_value = float(normalized)
+    except ValueError:
+        return term.lower() in answer.lower()
+
+    for candidate in _extract_numeric_values(answer):
+        # rel_tol=1e-3 accepts rounding (5,344.7 -> 5,345) but rejects a
+        # genuinely different figure (e.g. 31.6 will not satisfy 32.1).
+        if math.isclose(candidate, expected_value, rel_tol=1e-3, abs_tol=0.05):
+            return True
+    return False
 
 
 async def run_bbby_research_verification() -> bool:
@@ -127,7 +165,10 @@ async def run_bbby_research_verification() -> bool:
         {
             "id": "Q1_FACTUAL",
             "query": "What were BBBY's net sales in fiscal 2021 and fiscal 2022?",
-            "expected_terms": ["5,345", "7,871"],
+            # Official BBBY 2023 10-K: fiscal 2022 net sales $5,344.7M, fiscal 2021 $7,871M.
+            # Validated by numeric value (see _answer_contains_term), so "5,344.7",
+            # "5,344.7 million", or the rounded "5,345" all satisfy the fiscal-2022 fact.
+            "expected_terms": ["5,344.7", "7,871"],
             "expect_refusal": False,
             "description": "Factual Metric Extraction",
         },
@@ -241,9 +282,11 @@ async def run_bbby_research_verification() -> bool:
                 assert page is not None and page >= 1, f"Citation page must be >= 1, got {page}"
                 assert len(snippet) > 5, "Citation must include non-empty source snippet"
 
-            # Check expected keywords/numbers in answer
+            # Check expected keywords/numbers in answer.
+            # Numeric terms are matched by value (tolerant of formatting/rounding);
+            # qualitative terms are matched as case-insensitive substrings.
             for term in tq["expected_terms"]:
-                assert term.lower() in answer.lower(), f"Expected term '{term}' not found in answer for {qid}"
+                assert _answer_contains_term(answer, term), f"Expected term '{term}' not found in answer for {qid}"
 
             if "expected_direction" in tq and tq["expected_direction"]:
                 assert any(d in answer.lower() for d in tq["expected_direction"]), f"Expected direction from {tq['expected_direction']} not found in answer for {qid}"
