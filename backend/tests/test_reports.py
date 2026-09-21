@@ -827,7 +827,16 @@ def test_31_jinja2_template_rendering(sample_session_id, sample_user_id, apple_e
         extracted_metrics_list=[apple_extracted_metrics],
         red_flags_list=[bbby_red_flags],
     )
-    with open("c:/Rohit/projects/finsentry-ai/backend/agents/report/templates/report_layout.jinja2", "r", encoding="utf-8") as f:
+    from pathlib import Path
+
+    template_path = (
+        Path(__file__).resolve().parent.parent
+        / "agents"
+        / "report"
+        / "templates"
+        / "report_layout.jinja2"
+    )
+    with open(template_path, "r", encoding="utf-8") as f:
         tmpl_str = f.read()
 
     template = jinja2.Template(tmpl_str)

@@ -36,6 +36,20 @@ jobs:
           --health-timeout 3s
           --health-retries 5
 
+      # Isolated, ephemeral MongoDB for the CI test run only.
+      # No authentication and no production data — a throwaway standalone
+      # instance that is created and destroyed with the job. Never uses
+      # real/production MongoDB credentials.
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -55,7 +69,10 @@ jobs:
 
       - name: Run test suite
         env:
-          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          # Point at the ephemeral MongoDB service container above.
+          # This is an isolated, unauthenticated, throwaway test database —
+          # NOT production MongoDB and NOT a committed secret.
+          MONGODB_URI: mongodb://localhost:27017/finsentry_ci
           DATABASE_NAME: finsentry_ci
           JWT_SECRET_KEY: ci-test-secret-key-for-github-actions-do-not-use-in-prod
           REDIS_HOST: localhost
