@@ -14,10 +14,12 @@ Evaluates ResearchAgent on authentic corporate distress filings covering:
 """
 
 import asyncio
+import contextlib
 import logging
 import os
 import sys
 from pathlib import Path
+from unittest.mock import patch
 from bson import ObjectId
 
 try:
@@ -32,13 +34,83 @@ from services.storage_service import storage_service
 from agents.document.document_agent import document_agent
 from agents.red_flag.red_flag_agent import red_flag_agent
 from agents.research.research_agent import research_agent
+from core.constants import LLMProvider
+from schemas.llm_fallback import LLMFallbackResult
+from services.llm_fallback_service import llm_fallback_service
+from scripts.deterministic_research_llm import deterministic_research_completion
 from scripts.financial_value_matcher import answer_contains_term as _answer_contains_term
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 
-async def run_bbby_research_verification() -> bool:
+@contextlib.contextmanager
+def deterministic_llm_generation():
+    """
+    Replace ONLY the LLM generation seam with a deterministic, evidence-grounded
+    extractive summarizer.
+
+    Answer composition is the sole non-deterministic step in this pipeline, and it
+    behaves differently between a developer machine (provider API keys present ->
+    live model) and GitHub Actions (no keys -> every provider raises AUTH_ERROR,
+    the fallback chain exhausts, and the offline rules engine yields an answer
+    containing no figures at all). Pinning this one seam makes the factual
+    assertions below identical in both environments.
+
+    Everything else still runs for real: ingestion, chunking, embedding, hybrid
+    retrieval, query understanding, refusal gates, claim grounding, citation
+    validation against real chunk IDs/pages, and MongoDB persistence. The
+    replacement answer is extracted verbatim from the retrieved
+    <SOURCE_EVIDENCE>, so a retrieval regression still fails this test.
+    """
+
+    async def _deterministic_generate_with_fallback(
+        prompt,
+        system_prompt=None,
+        config=None,
+        is_structured_json=False,
+    ):
+        content = deterministic_research_completion(prompt, system_prompt)
+        return LLMFallbackResult(
+            content=content,
+            structured_json=None,
+            primary_provider=LLMProvider.OLLAMA,
+            selected_provider=LLMProvider.OLLAMA,
+            selected_model="deterministic-evidence-extractive-stub",
+            is_fallback=False,
+            fallback_attempts_count=1,
+            invocations_log=[],
+            execution_time_ms=0.0,
+            status="completed",
+        )
+
+    with patch.object(
+        llm_fallback_service,
+        "generate_with_fallback",
+        side_effect=_deterministic_generate_with_fallback,
+    ):
+        yield
+
+
+async def run_bbby_research_verification(deterministic: bool = True) -> bool:
+    """
+    Run the BBBY research audit.
+
+    deterministic=True (default, used by the CI regression test) pins the LLM
+    generation seam to an evidence-grounded extractive stub so the factual
+    assertions are reproducible on any machine and in GitHub Actions, where no
+    LLM provider credentials exist. Every other stage runs for real.
+
+    deterministic=False runs the full live-LLM integration path (requires
+    provider API keys) and is available via `python -m scripts.verify_bbby_research --live`.
+    """
+    if deterministic:
+        with deterministic_llm_generation():
+            return await _run_bbby_benchmarks()
+    return await _run_bbby_benchmarks()
+
+
+async def _run_bbby_benchmarks() -> bool:
     print("=" * 75)
     print("FINSENTRY AI — BED BATH & BEYOND (BBBY) RESEARCH AGENT AUDIT")
     print("=" * 75)
@@ -128,9 +200,20 @@ async def run_bbby_research_verification() -> bool:
         {
             "id": "Q1_FACTUAL",
             "query": "What were BBBY's net sales in fiscal 2021 and fiscal 2022?",
-            # Official BBBY 2023 10-K: fiscal 2022 net sales $5,344.7M, fiscal 2021 $7,871M.
-            # These canonical references are in MILLIONS and are validated by
-            # normalized financial value (scripts/financial_value_matcher.py), so
+            # Authoritative reference (official BBBY 2023 10-K): fiscal 2022 net
+            # sales $5,344.7M, fiscal 2021 $7,871M. Both canonical terms below are
+            # in MILLIONS.
+            #
+            # DOCUMENTED NORMALIZATION: the fixture filing
+            # (tests/fixtures/bbby_distress_10k.pdf, built by
+            # scripts/generate_bbby_distress_fixture.py) discloses net sales rounded
+            # to whole millions as "$5,345" / "$7,871". $5,345M is the correct
+            # whole-million rounding of the official $5,344.7M, so the precision-aware
+            # matcher accepts it (|5345 - 5344.7| = 0.3 <= the +/-0.5M band implied by
+            # whole-million precision). We therefore keep the precise official value
+            # as the reference rather than downgrading it to the rounded figure.
+            #
+            # Validated by normalized financial value (scripts/financial_value_matcher.py):
             # "5,344.7 million", "$5,344.7M", "5.3447 billion", "5.345 billion",
             # "$5.3 billion", "5,345 million" and "5,344,700,000" all satisfy the
             # fiscal-2022 fact, while a genuinely different figure still fails.
@@ -295,6 +378,9 @@ async def run_bbby_research_verification() -> bool:
 
 
 if __name__ == "__main__":
-    success = asyncio.run(run_bbby_research_verification())
+    # --live exercises the real LLM providers (requires API keys). The default
+    # deterministic mode is what CI and the pytest regression use.
+    live = "--live" in sys.argv
+    success = asyncio.run(run_bbby_research_verification(deterministic=not live))
     if not success:
         sys.exit(1)

@@ -228,3 +228,69 @@ def test_numeric_path_is_not_satisfied_by_keywords_alone():
     answer = "The report discusses net sales, revenue trends and total sales at length."
     assert answer_contains_term(answer, FY2022) is False
     assert answer_contains_term(answer, FY2021) is False
+
+
+# =====================================================================
+# 7. Regression: the exact GitHub Actions failure mode
+# =====================================================================
+
+def test_ci_no_llm_answer_correctly_fails_the_numeric_assertion():
+    """
+    Reproduces the CI failure. With no LLM provider credentials the research
+    pipeline's offline path returned this exact answer, which states no figure at
+    all. The matcher MUST reject it -- the CI failure was a genuine missing-value
+    signal, not a formatting/tolerance problem. The real fix is to make answer
+    generation deterministic (scripts/deterministic_research_llm.py), not to
+    loosen this matcher.
+    """
+    ci_answer = "The requested value is not reported in the uploaded filing."
+    assert financial_value_matches(ci_answer, FY2022) is False
+    assert financial_value_matches(ci_answer, FY2021) is False
+
+
+def test_evidence_grounded_answer_shape_matches():
+    """
+    The deterministic stub answers verbatim from the fixture filing, which
+    discloses net sales rounded to whole millions ("$5,345" / "$7,871").
+    Both must satisfy the precise official references.
+    """
+    grounded = (
+        "Results of Operations (Page 9): Net sales for fiscal 2022 were $5,345 million, "
+        "compared to $7,871 million in fiscal 2021, representing a severe top-line "
+        "decline of $2,526 million or 32.1%."
+    )
+    assert financial_value_matches(grounded, FY2022) is True
+    assert financial_value_matches(grounded, FY2021) is True
+    assert financial_value_matches(grounded, "32.1") is True
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "5.3447 billion dollars",
+        "$5.3447B",
+        "5344700000 dollars",
+        "5,344,700,000",
+        "approximately $5.34 billion",
+        "about 5.3 billion",
+        "$5,344.7 million",
+        "5,345 million",
+    ],
+)
+def test_step3_required_valid_representations(answer):
+    assert financial_value_matches(answer, FY2022) is True
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "5.3 million",      # wrong magnitude (thousand-fold too small)
+        "53 million",       # wrong magnitude
+        "53.447 billion",   # wrong magnitude (ten-fold too large)
+        "5.3447 trillion",  # wrong magnitude (million-fold too large)
+        "534.47 million",   # wrong magnitude
+    ],
+)
+def test_magnitude_is_preserved_wrong_scale_rejected(answer):
+    """Unit normalization must not collapse magnitudes."""
+    assert financial_value_matches(answer, FY2022) is False

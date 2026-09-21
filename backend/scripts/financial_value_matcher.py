@@ -69,9 +69,13 @@ _UNIT_TO_MILLIONS = {
 # separated by whitespace; single-letter units (K/M/B/T) must be adjacent to the
 # number (standard compact notation like "5.3B", "$5,344.7M") so we don't misread
 # prose such as "5 key risks".
+# NOTE on the `num` alternation order: the comma-grouped form requires at least one
+# comma group (`+`, not `*`). With `*` the first alternative would match only the
+# leading 1-3 digits of a comma-less integer -- "5344700000" parsed as "534" -- so
+# plain digit runs must fall through to the second alternative, which is greedy.
 _NUMBER_PATTERN = re.compile(
     r"\$?\s*"
-    r"(?P<num>\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?)"
+    r"(?P<num>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
     r"(?:\s*(?P<word>thousand|million|billion|trillion)\b|(?P<letter>[KMBT])\b)?",
     re.IGNORECASE,
 )
